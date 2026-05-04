@@ -1,0 +1,103 @@
+중간고사 1번째 문제 참고 코드
+
+#다음 표는 '가나다'기업의 각 사업부별 이번 달 판매 목표와 20일까지의 현 판매 금액
+#A사업부  현판매(27,683) 판매목표(32,577)
+#B사업부  현판매(24,382) 판매목표(39,997)
+#C사업부  현판매(18,335) 판매목표(21,471)
+#D사업부  현판매(6,904) 판매목표(10,818)
+#각 사업부별 이름과 현 판매 그리고 판매 목표를 리스트로 선언하여 출력(총 4개의 리스트)
+#리스트를 한 가지 추가해서 30일차에 예상 판매금액도 함께 출력
+#달성률도 한 가지 더 출력
+#100% 이상 -> A, 95 ~ 99% -> B, 91 ~ 94% -> C, 80 ~ 89% -> D, 나머지 F
+
+D_Name = ['A사업부', 'B사업부', 'C사업부', 'D사업부'];
+O_Mean = ['현 판매', '판매 목표', '예상 최종 판매', '달성률'];
+C_Sale = [27683, 24382, 18335, 6904];
+O_Sale = [32577, 39997, 21471, 10818];
+F_Sale = [0,0,0,0];
+T_Sale = [0,0,0,0];
+G_Sale = [0,0,0,0];
+
+for i in range(0,4) :
+    F_Sale[i] = (C_Sale[i]/20)*30;
+
+for i in range(0,4) :
+    T_Sale[i] = (F_Sale[i]/O_Sale[i])*100;
+
+for i in range(0,4) :
+    if int(T_Sale[i]) >= 100 :
+        G_Sale[i] = 'A';
+    elif int(T_Sale[i]) >= 95 and int(T_Sale[i]) < 100 :
+        G_Sale[i] = 'B';
+    elif int(T_Sale[i]) >= 91 and int(T_Sale[i]) < 94 :
+        G_Sale[i] = 'C';
+    elif int(T_Sale[i]) >= 80 and int(T_Sale[i]) < 89 :
+        G_Sale[i] = 'D';
+    else :
+        G_Sale[i] = 'F';
+
+for i in range(0,4) :
+    print(D_Name[i], O_Mean[0], C_Sale[i], O_Mean[1],O_Sale[i], O_Mean[2], F_Sale[i], O_Mean[3], int(T_Sale[i]), '%', '성적 :', G_Sale[i]);
+
+
+중간고사 2번째 문제 참고 코드
+
+import pandas as pd
+import random as rd
+
+# 출력 설정 (이미 배움)
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+
+# 파일 불러오기
+pd_DataSet = pd.read_csv('D:\\2nd_seungmin_python\\Pandas_Sample.csv')
+DF = pd.DataFrame(pd_DataSet)
+
+# 6개의 랜덤 줄 번호 생성 (1~100)
+random_nums = []
+for _ in range(6):
+    random_nums.append(rd.randint(1, 100))
+
+print("생성된 랜덤 줄 번호:", random_nums)
+print("=" * 50)
+
+# 결과를 저장할 리스트
+results = []
+
+# 6개 구간 계산
+for i in range(6):
+    num1 = random_nums[i]
+    num2 = random_nums[(i + 1) % 6]
+
+    # 항상 작은 수를 시작, 큰 수를 끝으로 정렬
+    start = min(num1, num2)
+    end = max(num1, num2)
+
+    print(f"{i}번 구간: {start}줄 ~ {end}줄")
+
+    # 구간 데이터 가져오기 (배운 행 슬라이싱 사용)
+    subset = DF[start - 1: end]
+
+    # X3 컬럼 총합과 행 수 계산
+    total = subset['X3'].sum()
+    count = len(subset)
+    avg = total / count if count > 0 else 0
+
+    # 결과 저장 (append 사용)
+    results.append({
+        '구간': f'{i}번 구간',
+        '시작줄': start,
+        '끝줄': end,
+        '행 수': count,
+        'X3_총합': total,
+        'X3_평균': round(avg, 2)
+    })
+
+# 결과를 표로 출력
+result_df = pd.DataFrame(results)
+print("\n" + "=" * 50)
+print(result_df)
+
+# 전체 요약
+print("\n=== 전체 요약 ===")
+print(f"6개 구간 평균의 평균 : {result_df['X3_평균'].mean():.2f}")
