@@ -27,7 +27,7 @@ os.environ["SDL_AUDIODRIVER"] = "alsa"
 
 print("🎵 오디오 출력 테스트 중... HDMI/3.5mm 스피커로 나와야 합니다.")
 
-SOUND_PATH = "/home/noisezero/noise_zero/piano/32음/"
+SOUND_PATH = "/home/noisezero/noise_zero/piano/"
 
 full_notes = [
     "AS1", "B1", "C2", "CS2", "D2", "DS2", "E2", "F2", "FS2", "G2", "GS2", "A2",
