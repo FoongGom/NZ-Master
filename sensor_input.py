@@ -2,15 +2,25 @@
 =============================================================
   층간소음 ANC 프로젝트 - 센서 & 입력 담당 (Raspberry Pi Only)
   파일명: sensor_input.py
-  설명: 라즈베리파이만 사용하는 버전
-        아두이노/진동센서 없이 I2S 마이크만으로 동작
+  설명: INMP441 I2S 마이크 + 라즈베리파이 4B 전용
+        딜레이 0.33ms 극한 최적화 버전
 =============================================================
   [사전 설치]
   pip install sounddevice numpy RPi.GPIO
 
+  [INMP441 I2S 연결]
+  INMP441 VDD  → 라즈베리파이 3.3V  (1번 핀)
+  INMP441 GND  → 라즈베리파이 GND   (6번 핀)
+  INMP441 SD   → 라즈베리파이 GPIO20 (38번 핀, PCM_DIN)
+  INMP441 SCK  → 라즈베리파이 GPIO18 (12번 핀, PCM_CLK)
+  INMP441 WS   → 라즈베리파이 GPIO19 (35번 핀, PCM_FS)
+  INMP441 L/R  → GND (왼쪽 채널 고정)
+
   [라즈베리파이 I2S 설정] /boot/config.txt 에 아래 추가:
   dtoverlay=i2s-mmap
-  dtoverlay=googlevoicehat-soundcard   (또는 사용하는 HAT에 맞게)
+
+  [딜레이 계산]
+  BLOCK_SIZE 16 / SAMPLE_RATE 48000 = 0.33ms
 =============================================================
 """
 
@@ -20,7 +30,6 @@ import wave
 import time
 import threading
 import os
-
 
 # 라즈베리파이 GPIO (진동 감지용 - 선택사항)
 try:
@@ -34,11 +43,12 @@ except ImportError:
 #  전역 설정값
 # ─────────────────────────────────────────────
 SAMPLE_RATE      = 48000   # I2S 친화적 샘플레이트
-CHANNELS         = 1       # 모노
-BLOCK_SIZE       = 128     # 2.7ms 딜레이
+CHANNELS         = 1       # 모노 (INMP441 L/R → GND = 왼쪽 채널)
+BLOCK_SIZE       = 16      # 16 / 48000 = 0.33ms 딜레이
 DTYPE            = 'float32'
 NOISE_FLOOR      = 0.01    # 노이즈 게이트 임계값
 SAVE_DIR         = './noise_samples'
+OVERFLOW_LIMIT   = 10      # 연속 오버플로우 허용 횟수 (초과 시 경고)
 
 # 라즈베리파이 GPIO 핀 번호 (진동 센서 직접 연결 시)
 VIBRATION_PIN    = 17      # BCM 기준 GPIO 17번 핀
@@ -51,6 +61,7 @@ class SignalStabilizer:
     """
     마이크 원시 신호 전처리 클래스
     DC 오프셋 제거 → 노이즈 게이트
+    BLOCK_SIZE 16 기준 연산 최소화
     """
 
     def __init__(self, noise_floor: float = NOISE_FLOOR):
@@ -68,7 +79,7 @@ class SignalStabilizer:
         return signal
 
     def process(self, raw_signal: np.ndarray) -> np.ndarray:
-        """전체 안정화 파이프라인"""
+        """전체 안정화 파이프라인 (연산 최소화)"""
         signal = self.remove_dc_offset(raw_signal)
         signal = self.apply_noise_gate(signal)
         return signal
@@ -81,7 +92,6 @@ class GPIOVibrationDetector:
     """
     라즈베리파이 GPIO에 진동 센서를 직접 연결하는 클래스
     아두이노 없이 라즈베리파이만으로 진동 감지
-    SW-420 같은 디지털 진동 센서 사용 시 활용
 
     [연결 방법]
     진동 센서 VCC  → 라즈베리파이 3.3V (1번 핀)
@@ -173,17 +183,19 @@ class NoiseDataCollector:
 # ─────────────────────────────────────────────
 class SensorInputPipeline:
     """
-    라즈베리파이 전용 센서 & 입력 핵심 클래스
+    INMP441 + 라즈베리파이 4B 전용 센서 & 입력 핵심 클래스
     마이크 스트림 → 안정화 → DSP팀 콜백 직접 호출
+    BLOCK_SIZE=16 으로 0.33ms 딜레이 달성
     """
 
     def __init__(self):
-        self.stabilizer   = SignalStabilizer()
-        self.vibration    = GPIOVibrationDetector()  # 아두이노 대신 GPIO 직접 연결
-        self.collector    = NoiseDataCollector()
-        self.dsp_callback = None
-        self._running     = False
-        self._stream      = None
+        self.stabilizer      = SignalStabilizer()
+        self.vibration       = GPIOVibrationDetector()
+        self.collector       = NoiseDataCollector()
+        self.dsp_callback    = None
+        self._running        = False
+        self._stream         = None
+        self._overflow_count = 0   # 오버플로우 카운터
 
     # ── DSP팀 콜백 등록 ───────────────────────
     def set_dsp_callback(self, func):
@@ -202,18 +214,24 @@ class SensorInputPipeline:
     # ── 내부 오디오 콜백 ──────────────────────
     def _audio_callback(self, indata, frames, time_info, status):
         """
-        sounddevice가 BLOCK_SIZE마다 자동 호출
-        원시 신호 → 안정화 → DSP팀 함수 직접 호출 (큐 없음)
+        sounddevice가 BLOCK_SIZE(16)마다 자동 호출
+        0.33ms마다 실행되므로 콜백 내부 연산을 최소화
         """
+        # 오버플로우 감지 및 카운트
         if status:
-            print(f"[콜백 경고] {status}")
+            self._overflow_count += 1
+            if self._overflow_count >= OVERFLOW_LIMIT:
+                print(f"[경고] 오버플로우 {self._overflow_count}회 발생 - "
+                      f"BLOCK_SIZE를 32로 올리는 것을 권장")
+        else:
+            self._overflow_count = 0  # 정상이면 카운터 초기화
 
         raw    = indata[:, 0].copy()
         stable = self.stabilizer.process(raw)
         rms    = np.sqrt(np.mean(stable ** 2))
 
         if rms > NOISE_FLOOR and self.dsp_callback is not None:
-            self.dsp_callback(stable)
+            self.dsp_callback(stable)  # DSP팀 함수 직접 호출 (큐 없음)
 
     # ── 스트림 시작 / 중지 ────────────────────
     def start(self):
@@ -229,13 +247,14 @@ class SensorInputPipeline:
             blocksize=BLOCK_SIZE,
             dtype=DTYPE,
             callback=self._audio_callback,
-            latency='low'
+            latency='low'             # sounddevice 내부 딜레이도 최소화
         )
         self._stream.start()
-        print(f"[시작] 마이크 스트림 ON")
+        print(f"[시작] INMP441 마이크 스트림 ON")
         print(f"       샘플레이트 : {SAMPLE_RATE}Hz")
         print(f"       블록 크기  : {BLOCK_SIZE}")
-        print(f"       딜레이     : {BLOCK_SIZE / SAMPLE_RATE * 1000:.1f}ms")
+        print(f"       딜레이     : {BLOCK_SIZE / SAMPLE_RATE * 1000:.2f}ms")
+        print(f"       초당 콜백  : {SAMPLE_RATE // BLOCK_SIZE}회")
 
     def stop(self):
         """마이크 입력 스트림 중지"""
@@ -243,15 +262,12 @@ class SensorInputPipeline:
         if self._stream:
             self._stream.stop()
             self._stream.close()
-        self.vibration.cleanup()  # GPIO 핀 정리
+        self.vibration.cleanup()
         print("[중지] 마이크 스트림 OFF")
 
     # ── 진동 모니터 스레드 ────────────────────
     def _vibration_monitor(self):
-        """
-        GPIO 진동 감지 상태를 주기적으로 확인하는 스레드
-        GPIO 인터럽트가 감지하면 여기서 출력
-        """
+        """GPIO 진동 감지 상태를 주기적으로 확인하는 스레드"""
         while self._running:
             if self.vibration.is_detected():
                 print("[층간소음 감지!] 진동 신호 확인됨")
@@ -275,7 +291,7 @@ class SensorInputPipeline:
 def main():
     print("=" * 55)
     print("  층간소음 ANC - 센서 & 입력 모듈")
-    print("  Raspberry Pi Only 버전")
+    print("  INMP441 + Raspberry Pi 4B | 딜레이 0.33ms")
     print("=" * 55)
 
     pipeline = SensorInputPipeline()
@@ -291,7 +307,8 @@ def main():
     pipeline.start()
     pipeline.start_vibration_monitor()
 
-    print("\n[실행 중] Ctrl+C 로 종료\n")
+    print("\n[실행 중] Ctrl+C 로 종료")
+    print("[참고] '[경고] 오버플로우' 메시지 반복 시 BLOCK_SIZE=32 로 변경\n")
 
     try:
         while True:
