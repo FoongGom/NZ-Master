@@ -1,325 +1,518 @@
 """
 =============================================================
-  층간소음 ANC 프로젝트 - 센서 & 입력 담당 (Raspberry Pi Only)
-  파일명: sensor_input.py
-  설명: INMP441 I2S 마이크 + 라즈베리파이 4B 전용
-        딜레이 0.33ms 극한 최적화 버전
+sensor_input.py
+이형규 - 센서 & 입력 모듈 (라즈베리파이 전용)
 =============================================================
-  [사전 설치]
-  pip install sounddevice numpy RPi.GPIO
 
-  [INMP441 I2S 연결]
-  INMP441 VDD  → 라즈베리파이 3.3V  (1번 핀)
-  INMP441 GND  → 라즈베리파이 GND   (6번 핀)
-  INMP441 SD   → 라즈베리파이 GPIO20 (38번 핀, PCM_DIN)
-  INMP441 SCK  → 라즈베리파이 GPIO18 (12번 핀, PCM_CLK)
-  INMP441 WS   → 라즈베리파이 GPIO19 (35번 핀, PCM_FS)
-  INMP441 L/R  → GND (왼쪽 채널 고정)
+담당 기능:
+  1) I2S 마이크 세팅       → I2SMicConfig / capture_i2s_mic()
+  2) 진동 센서 튜닝         → MPU6050Config / capture_mpu6050()
+  3) 노이즈 데이터 수집     → SensorDataCollector
+  4) 입력 신호 안정화       → InputSignalStabilizer / run_sensor_pipeline()
 
-  [라즈베리파이 I2S 설정] /boot/config.txt 에 아래 추가:
-  dtoverlay=i2s-mmap
+연동 방법 (메인 코드에서):
+    from sensor_input import run_sensor_pipeline
+    input_signal = run_sensor_pipeline(raw_signal=<시뮬레이션 신호>)
 
-  [딜레이 계산]
-  BLOCK_SIZE 16 / SAMPLE_RATE 48000 = 0.33ms
+하드웨어 구성 (라즈베리파이):
+  [I2S 마이크]  BCK=GPIO18 / LRCLK=GPIO19 / DATA=GPIO20
+  [MPU-6050]    SDA=GPIO2  / SCL=GPIO3   (I2C 버스 1)
+
+설치 패키지:
+  pip install sounddevice smbus2 numpy scipy
+  sudo apt install fonts-nanum
 =============================================================
 """
 
-import numpy as np
-import sounddevice as sd
-import wave
 import time
-import threading
-import os
+import numpy as np
+from scipy.signal import butter, lfilter
 
-# 라즈베리파이 GPIO (진동 감지용 - 선택사항)
+# ── 라즈베리파이 하드웨어 라이브러리 ──────────────────────────
+# 없으면 자동으로 시뮬레이션 모드 전환
 try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
+    import sounddevice as sd
+    _SD = True
 except ImportError:
-    GPIO_AVAILABLE = False
-    print("[경고] RPi.GPIO 미설치 - GPIO 진동 감지 비활성화")
+    _SD = False
+    print("[sensor_input] sounddevice 없음 → I2S 마이크 시뮬레이션 모드")
 
-# ─────────────────────────────────────────────
-#  전역 설정값
-# ─────────────────────────────────────────────
-SAMPLE_RATE      = 48000   # I2S 친화적 샘플레이트
-CHANNELS         = 1       # 모노 (INMP441 L/R → GND = 왼쪽 채널)
-BLOCK_SIZE       = 16      # 16 / 48000 = 0.33ms 딜레이
-DTYPE            = 'float32'
-NOISE_FLOOR      = 0.01    # 노이즈 게이트 임계값
-SAVE_DIR         = './noise_samples'
-OVERFLOW_LIMIT   = 10      # 연속 오버플로우 허용 횟수 (초과 시 경고)
-
-# 라즈베리파이 GPIO 핀 번호 (진동 센서 직접 연결 시)
-VIBRATION_PIN    = 17      # BCM 기준 GPIO 17번 핀
+try:
+    import smbus2
+    _SMBUS = True
+except ImportError:
+    _SMBUS = False
+    print("[sensor_input] smbus2 없음 → MPU-6050 시뮬레이션 모드")
 
 
-# ─────────────────────────────────────────────
-#  1. 신호 안정화 클래스
-# ─────────────────────────────────────────────
-class SignalStabilizer:
+# =========================================================
+# 공통 상수
+# =========================================================
+MIC_FS      = 44100   # I2S 마이크 캡처 주파수 (Hz)
+DSP_FS      = 1000    # 메인 코드 DSP 처리 주파수 (Hz)
+DOWNSAMPLE  = MIC_FS // DSP_FS   # 다운샘플 비율 (44)
+
+MPU6050_ADDR     = 0x68
+MPU6050_PWR_REG  = 0x6B
+MPU6050_ACCEL_REG= 0x3B
+I2C_BUS          = 1
+
+
+# =========================================================
+# [1] I2S 마이크 세팅
+# =========================================================
+
+class I2SMicConfig:
     """
-    마이크 원시 신호 전처리 클래스
-    DC 오프셋 제거 → 노이즈 게이트
-    BLOCK_SIZE 16 기준 연산 최소화
-    """
+    I2S 마이크 설정.
 
-    def __init__(self, noise_floor: float = NOISE_FLOOR):
-        self.noise_floor = noise_floor
+    지원 마이크 : INMP441, SPH0645, ICS-43434
+    GPIO 핀     : BCK=18 / LRCLK=19 / DATA=20
+    /boot/config.txt 에 'dtparam=i2s=on' 또는
+                        'dtoverlay=googlevoicehat-soundcard' 필요.
 
-    def remove_dc_offset(self, signal: np.ndarray) -> np.ndarray:
-        """DC 오프셋 제거: 신호 평균을 0으로 이동"""
-        return signal - np.mean(signal)
-
-    def apply_noise_gate(self, signal: np.ndarray) -> np.ndarray:
-        """노이즈 게이트: RMS가 임계값 이하면 무음 처리"""
-        rms = np.sqrt(np.mean(signal ** 2))
-        if rms < self.noise_floor:
-            return np.zeros_like(signal)
-        return signal
-
-    def process(self, raw_signal: np.ndarray) -> np.ndarray:
-        """전체 안정화 파이프라인 (연산 최소화)"""
-        signal = self.remove_dc_offset(raw_signal)
-        signal = self.apply_noise_gate(signal)
-        return signal
-
-
-# ─────────────────────────────────────────────
-#  2. GPIO 진동 감지 (라즈베리파이 직접 연결)
-# ─────────────────────────────────────────────
-class GPIOVibrationDetector:
-    """
-    라즈베리파이 GPIO에 진동 센서를 직접 연결하는 클래스
-    아두이노 없이 라즈베리파이만으로 진동 감지
-
-    [연결 방법]
-    진동 센서 VCC  → 라즈베리파이 3.3V (1번 핀)
-    진동 센서 GND  → 라즈베리파이 GND  (6번 핀)
-    진동 센서 DO   → 라즈베리파이 GPIO17 (11번 핀)
+    Parameters
+    ----------
+    sample_rate : 캡처 주파수 (Hz) — 기본 44100
+    bit_depth   : 비트 깊이 (16/24/32)
+    channels    : 채널 수 (1=모노)
+    device_name : sounddevice 장치명 ('arecord -l' 로 확인)
+    gain_db     : 소프트웨어 게인 (dB)
+    hp_cutoff   : 직류 차단 하이패스 (Hz)
     """
 
-    def __init__(self, pin: int = VIBRATION_PIN):
-        self.pin = pin
-        self.detected = False
+    def __init__(
+        self,
+        sample_rate : int   = MIC_FS,
+        bit_depth   : int   = 32,
+        channels    : int   = 1,
+        device_name : str   = "default",
+        gain_db     : float = 6.0,
+        hp_cutoff   : float = 20.0,
+    ):
+        self.sample_rate  = sample_rate
+        self.bit_depth    = bit_depth
+        self.channels     = channels
+        self.device_name  = device_name
+        self.gain_db      = gain_db
+        self.hp_cutoff    = hp_cutoff
+        self.gain_linear  = 10 ** (gain_db / 20.0)
 
-        if GPIO_AVAILABLE:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self.pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-            # 진동 감지 시 자동으로 콜백 호출 (인터럽트 방식)
-            GPIO.add_event_detect(
-                self.pin,
-                GPIO.RISING,
-                callback=self._on_vibration,
-                bouncetime=100   # 100ms 디바운스 (중복 감지 방지)
+    def __repr__(self):
+        return (
+            f"I2SMicConfig(fs={self.sample_rate}Hz, {self.bit_depth}bit, "
+            f"gain={self.gain_db}dB, HP={self.hp_cutoff}Hz, "
+            f"device='{self.device_name}')"
+        )
+
+
+def capture_i2s_mic(mic_cfg: I2SMicConfig, duration: float) -> np.ndarray:
+    """
+    I2S 마이크에서 오디오를 캡처한다.
+
+    sounddevice 없거나 하드웨어 오류 → 가우시안 잡음으로 대체.
+
+    Returns
+    -------
+    signal : float64, 정규화 [-1, 1], shape=(duration*sample_rate,)
+    """
+    n = int(duration * mic_cfg.sample_rate)
+
+    if _SD:
+        try:
+            print(f"  [I2S] 녹음 시작 ({duration}s, {mic_cfg.sample_rate}Hz) ...")
+            raw = sd.rec(
+                frames     = n,
+                samplerate = mic_cfg.sample_rate,
+                channels   = mic_cfg.channels,
+                dtype      = "float32",
+                device     = mic_cfg.device_name,
+                blocking   = True,
             )
-            print(f"[GPIO 진동 감지] GPIO{self.pin} 핀 설정 완료")
+            sig = raw[:, 0].astype(np.float64)
+            print("  [I2S] 녹음 완료")
+        except Exception as e:
+            print(f"  [I2S] 오류({e}) → 시뮬레이션 신호 사용")
+            sig = np.random.randn(n) * 0.05
+    else:
+        sig = np.random.randn(n) * 0.05
+
+    # 소프트웨어 게인
+    sig = sig * mic_cfg.gain_linear
+
+    # 하이패스 (직류 제거)
+    nyq = mic_cfg.sample_rate / 2.0
+    b, a = butter(2, mic_cfg.hp_cutoff / nyq, btype="high")
+    sig = lfilter(b, a, sig)
+
+    # 정규화
+    pk = np.max(np.abs(sig))
+    if pk > 1e-9:
+        sig = sig / pk
+    return sig
+
+
+# =========================================================
+# [2] 진동 센서 튜닝 (MPU-6050)
+# =========================================================
+
+class MPU6050Config:
+    """
+    MPU-6050 진동 센서(가속도계) 설정.
+
+    I2C 핀  : SDA=GPIO2(Pin3) / SCL=GPIO3(Pin5)
+    전원    : 3.3V(Pin1) / GND(Pin6)
+    주소    : AD0=GND → 0x68 / AD0=3.3V → 0x69
+    확인    : i2cdetect -y 1
+
+    Parameters
+    ----------
+    i2c_bus      : I2C 버스 번호 (라즈베리파이 기본 1)
+    address      : MPU-6050 I2C 주소
+    accel_range  : 가속도 측정 범위 (RANGE_2G ~ RANGE_16G)
+    sample_rate  : 읽기 루프 주파수 (Hz)
+    axis         : 측정 축 ('x'/'y'/'z') — 층간소음은 'z' 권장
+    lp_cutoff    : 저역통과 차단 주파수 (Hz)
+    """
+
+    RANGE_2G  = 0x00   # ±2g,  LSB=16384
+    RANGE_4G  = 0x08   # ±4g,  LSB=8192
+    RANGE_8G  = 0x10   # ±8g,  LSB=4096
+    RANGE_16G = 0x18   # ±16g, LSB=2048
+
+    _LSB = {0x00: 16384.0, 0x08: 8192.0, 0x10: 4096.0, 0x18: 2048.0}
+
+    def __init__(
+        self,
+        i2c_bus     : int   = I2C_BUS,
+        address     : int   = MPU6050_ADDR,
+        accel_range : int   = None,
+        sample_rate : int   = DSP_FS,
+        axis        : str   = "z",
+        lp_cutoff   : float = 200.0,
+    ):
+        self.i2c_bus     = i2c_bus
+        self.address     = address
+        self.accel_range = accel_range if accel_range is not None else self.RANGE_2G
+        self.sample_rate = sample_rate
+        self.axis        = axis.lower()
+        self.lp_cutoff   = lp_cutoff
+        self.lsb         = self._LSB.get(self.accel_range, 16384.0)
+
+    def __repr__(self):
+        rng = {0x00:"±2g",0x08:"±4g",0x10:"±8g",0x18:"±16g"}
+        return (
+            f"MPU6050Config(bus={self.i2c_bus}, addr=0x{self.address:02X}, "
+            f"range={rng.get(self.accel_range,'?')}, "
+            f"axis={self.axis}, LP={self.lp_cutoff}Hz)"
+        )
+
+
+def _mpu_init(bus, cfg: MPU6050Config):
+    """MPU-6050 슬립 해제 + 가속도 범위 설정."""
+    bus.write_byte_data(cfg.address, MPU6050_PWR_REG, 0x00)
+    time.sleep(0.05)
+    bus.write_byte_data(cfg.address, 0x1C, cfg.accel_range)
+
+
+def _read_accel(bus, cfg: MPU6050Config) -> float:
+    """지정 축 가속도 1샘플 읽기 (g 단위)."""
+    offset = {"x": 0, "y": 2, "z": 4}.get(cfg.axis, 4)
+    d = bus.read_i2c_block_data(cfg.address, MPU6050_ACCEL_REG + offset, 2)
+    raw = (d[0] << 8) | d[1]
+    if raw > 32767:
+        raw -= 65536
+    return raw / cfg.lsb
+
+
+def capture_mpu6050(mpu_cfg: MPU6050Config, duration: float) -> np.ndarray:
+    """
+    MPU-6050에서 가속도를 수집한다.
+
+    smbus2 없거나 하드웨어 오류 → 가우시안 잡음으로 대체.
+
+    Returns
+    -------
+    signal : float64, 정규화 [-1, 1], shape=(duration*sample_rate,)
+    """
+    n        = int(duration * mpu_cfg.sample_rate)
+    interval = 1.0 / mpu_cfg.sample_rate
+
+    if _SMBUS:
+        try:
+            bus = smbus2.SMBus(mpu_cfg.i2c_bus)
+            _mpu_init(bus, mpu_cfg)
+            print(f"  [MPU-6050] 수집 시작 ({duration}s, {mpu_cfg.sample_rate}Hz) ...")
+            samples = []
+            for _ in range(n):
+                t0 = time.monotonic()
+                samples.append(_read_accel(bus, mpu_cfg))
+                sl = interval - (time.monotonic() - t0)
+                if sl > 0:
+                    time.sleep(sl)
+            bus.close()
+            print("  [MPU-6050] 수집 완료")
+            sig = np.array(samples, dtype=np.float64)
+        except Exception as e:
+            print(f"  [MPU-6050] 오류({e}) → 시뮬레이션 신호 사용")
+            sig = np.random.randn(n) * 0.02
+    else:
+        sig = np.random.randn(n) * 0.02
+
+    # 저역통과 필터
+    nyq = mpu_cfg.sample_rate / 2.0
+    b, a = butter(4, min(mpu_cfg.lp_cutoff / nyq, 0.999), btype="low")
+    sig = lfilter(b, a, sig)
+
+    # 정규화
+    pk = np.max(np.abs(sig))
+    if pk > 1e-9:
+        sig = sig / pk
+    return sig
+
+
+# =========================================================
+# [3] 노이즈 데이터 수집 & 센서 융합
+# =========================================================
+
+class SensorDataCollector:
+    """
+    I2S 마이크 + MPU-6050 두 채널을 수집·융합한다.
+
+    사용법:
+        collector = SensorDataCollector(mic_cfg, mpu_cfg)
+        fused_dsp = collector.collect(duration=8.0)
+    """
+
+    def __init__(self, mic_cfg: I2SMicConfig, mpu_cfg: MPU6050Config):
+        self.mic_cfg    = mic_cfg
+        self.mpu_cfg    = mpu_cfg
+        self.mic_signal = None   # 다운샘플 후 마이크 신호 (DSP_FS)
+        self.vib_signal = None   # 진동 센서 신호 (DSP_FS)
+        self.fused      = None   # 융합 신호 (DSP_FS)
+        self.stats      = {}
+
+    def collect(
+        self,
+        duration   : float = 8.0,
+        mic_weight : float = 0.6,
+        _sim_signal: np.ndarray = None,
+    ) -> np.ndarray:
+        """
+        두 센서를 수집 후 가중 합산.
+
+        Parameters
+        ----------
+        duration    : 수집 시간 (초)
+        mic_weight  : 마이크 가중치 (0~1), 나머지는 진동 센서
+        _sim_signal : 시뮬레이션용 대체 신호 (DSP_FS 기준)
+                      None 이면 실제 하드웨어 수집
+
+        Returns
+        -------
+        fused : DSP_FS 기준 융합 신호
+        """
+        if _sim_signal is not None:
+            self._process_sim(duration, mic_weight, _sim_signal)
         else:
-            print("[GPIO 진동 감지] 비활성화 상태")
+            self._process_hw(duration, mic_weight)
 
-    def _on_vibration(self, channel):
-        """진동 감지 시 자동 호출되는 인터럽트 콜백"""
-        self.detected = True
-        print(f"[진동 감지] GPIO{channel} 신호 감지!")
+        self._compute_stats()
+        return self.fused
 
-    def is_detected(self) -> bool:
-        """진동 감지 여부 반환 후 초기화"""
-        if self.detected:
-            self.detected = False  # 읽은 후 초기화
-            return True
-        return False
+    # ── 실제 하드웨어 수집 ───────────────────────────────────
+    def _process_hw(self, duration, mic_weight):
+        mic_raw = capture_i2s_mic(self.mic_cfg, duration)
+        vib_raw = capture_mpu6050(self.mpu_cfg, duration)
 
-    def cleanup(self):
-        """GPIO 핀 정리"""
-        if GPIO_AVAILABLE:
-            GPIO.cleanup()
-            print("[GPIO] 핀 정리 완료")
+        # 마이크 다운샘플: 44100 → 1000 Hz
+        nyq = MIC_FS / 2.0
+        aa  = min((DSP_FS / 2.0 - 50) / nyq, 0.999)
+        b, a = butter(8, aa, btype="low")
+        mic_ds = lfilter(b, a, mic_raw)[::DOWNSAMPLE]
 
+        n = min(len(mic_ds), len(vib_raw))
+        self.mic_signal = mic_ds[:n]
+        self.vib_signal = vib_raw[:n]
+        self.fused = mic_weight * self.mic_signal + (1 - mic_weight) * self.vib_signal
 
-# ─────────────────────────────────────────────
-#  3. 노이즈 데이터 수집기
-# ─────────────────────────────────────────────
-class NoiseDataCollector:
-    """
-    층간소음 샘플을 .wav 파일로 저장
-    AI러닝팀에 학습 데이터 제공용
-    """
-
-    def __init__(self, save_dir: str = SAVE_DIR):
-        self.save_dir = save_dir
-        os.makedirs(save_dir, exist_ok=True)
-
-    def collect(self, duration: float = 5.0, label: str = "sample") -> np.ndarray:
-        """duration초 동안 마이크 녹음 후 WAV로 저장"""
-        print(f"[수집] {duration}초간 녹음 시작... (레이블: {label})")
-        recording = sd.rec(
-            int(duration * SAMPLE_RATE),
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=DTYPE
+    # ── 시뮬레이션 신호 처리 ────────────────────────────────
+    def _process_sim(self, duration, mic_weight, sim):
+        # 마이크 경로: 업샘플 → 대역통과 → 다운샘플
+        nyq_mic = MIC_FS / 2.0
+        ups = np.interp(
+            np.linspace(0, len(sim) - 1, int(duration * MIC_FS)),
+            np.arange(len(sim)), sim
         )
-        sd.wait()
+        b, a = butter(4, [20.0 / nyq_mic, min(420.0 / nyq_mic, 0.999)], btype="band")
+        mic_bp = lfilter(b, a, ups)
+        b2, a2 = butter(8, min((DSP_FS / 2.0 - 50) / nyq_mic, 0.999), btype="low")
+        mic_ds = lfilter(b2, a2, mic_bp)[::DOWNSAMPLE]
 
-        filename = os.path.join(
-            self.save_dir,
-            f"{label}_{int(time.time())}.wav"
-        )
-        self._save_wav(recording, filename)
-        print(f"[저장 완료] {filename}")
-        return recording
+        # 진동 센서 경로: 저역통과
+        nyq_dsp = DSP_FS / 2.0
+        b3, a3 = butter(4, min(200.0 / nyq_dsp, 0.999), btype="low")
+        vib = lfilter(b3, a3, sim)
 
-    def _save_wav(self, data: np.ndarray, filename: str):
-        """float32 배열을 16-bit WAV 파일로 저장"""
-        audio_int16 = np.clip(data * 32767, -32768, 32767).astype(np.int16)
-        with wave.open(filename, 'w') as wf:
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes(audio_int16.tobytes())
+        n = min(len(mic_ds), len(vib))
+        self.mic_signal = mic_ds[:n]
+        self.vib_signal = vib[:n]
+        self.fused = mic_weight * self.mic_signal + (1 - mic_weight) * self.vib_signal
+
+    # ── 통계 계산 ────────────────────────────────────────────
+    def _compute_stats(self):
+        def _r(x): return float(np.sqrt(np.mean(x ** 2)))
+        def _p(x): return float(np.max(np.abs(x)))
+
+        ws   = int(0.2 * DSP_FS)
+        wins = [_r(self.fused[i:i+ws]) for i in range(0, len(self.fused)-ws, ws)]
+        act  = float(np.mean(np.array(wins) > 0.3 * max(wins))) if wins else 0.0
+
+        self.stats = {
+            "mic_rms":      round(_r(self.mic_signal), 4),
+            "vib_rms":      round(_r(self.vib_signal), 4),
+            "fused_rms":    round(_r(self.fused),      4),
+            "fused_peak":   round(_p(self.fused),      4),
+            "active_ratio": round(act,                 4),
+        }
+
+        if self.stats["fused_rms"] < 0.01:
+            print("  [경고] 융합 신호 RMS가 너무 낮습니다. 센서 연결을 확인하세요.")
+        if self.stats["active_ratio"] < 0.1:
+            print("  [경고] 활성 구간이 짧습니다. 소음 발생 여부를 확인하세요.")
+
+    def print_stats(self):
+        print("\n  [센서 수집 통계]")
+        for k, v in self.stats.items():
+            print(f"    {k:20s}: {v}")
 
 
-# ─────────────────────────────────────────────
-#  4. 메인 입력 파이프라인
-# ─────────────────────────────────────────────
-class SensorInputPipeline:
+# =========================================================
+# [4] 입력 신호 안정화
+# =========================================================
+
+class InputSignalStabilizer:
     """
-    INMP441 + 라즈베리파이 4B 전용 센서 & 입력 핵심 클래스
-    마이크 스트림 → 안정화 → DSP팀 콜백 직접 호출
-    BLOCK_SIZE=16 으로 0.33ms 딜레이 달성
+    DSP 알고리즘 진입 전 신호 전처리.
+
+    처리 순서:
+      1) DC 오프셋 제거
+      2) 진폭 정규화 (target_rms)
+      3) 저역통과 전처리 필터
+      4) 스파이크 클리핑
     """
 
-    def __init__(self):
-        self.stabilizer      = SignalStabilizer()
-        self.vibration       = GPIOVibrationDetector()
-        self.collector       = NoiseDataCollector()
-        self.dsp_callback    = None
-        self._running        = False
-        self._stream         = None
-        self._overflow_count = 0   # 오버플로우 카운터
+    def __init__(
+        self,
+        fs              : int   = DSP_FS,
+        target_rms      : float = 0.3,
+        clip_threshold  : float = 2.5,
+        prefilter_cutoff: float = 450.0,
+    ):
+        self.fs               = fs
+        self.target_rms       = target_rms
+        self.clip_threshold   = clip_threshold
+        self.prefilter_cutoff = prefilter_cutoff
 
-    # ── DSP팀 콜백 등록 ───────────────────────
-    def set_dsp_callback(self, func):
-        """
-        DSP팀이 자신의 처리 함수를 등록하는 메서드
+    def stabilize(self, signal: np.ndarray) -> np.ndarray:
+        s = signal - np.mean(signal)                          # 1) DC 제거
 
-        사용법 (DSP팀):
-            from sensor_input import SensorInputPipeline
-            pipeline = SensorInputPipeline()
-            pipeline.set_dsp_callback(내_처리_함수)
-            pipeline.start()
-        """
-        self.dsp_callback = func
-        print("[DSP 연동] 콜백 함수 등록 완료")
+        cur = float(np.sqrt(np.mean(s ** 2)))                 # 2) 정규화
+        if cur > 1e-9:
+            s = s * (self.target_rms / cur)
 
-    # ── 내부 오디오 콜백 ──────────────────────
-    def _audio_callback(self, indata, frames, time_info, status):
-        """
-        sounddevice가 BLOCK_SIZE(16)마다 자동 호출
-        0.33ms마다 실행되므로 콜백 내부 연산을 최소화
-        """
-        # 오버플로우 감지 및 카운트
-        if status:
-            self._overflow_count += 1
-            if self._overflow_count >= OVERFLOW_LIMIT:
-                print(f"[경고] 오버플로우 {self._overflow_count}회 발생 - "
-                      f"BLOCK_SIZE를 32로 올리는 것을 권장")
-        else:
-            self._overflow_count = 0  # 정상이면 카운터 초기화
+        nyq = self.fs / 2.0                                   # 3) LPF
+        b, a = butter(4, min(self.prefilter_cutoff / nyq, 0.999), btype="low")
+        s = lfilter(b, a, s)
 
-        raw    = indata[:, 0].copy()
-        stable = self.stabilizer.process(raw)
-        rms    = np.sqrt(np.mean(stable ** 2))
+        clip = self.target_rms * self.clip_threshold          # 4) 클리핑
+        s = np.clip(s, -clip, clip)
+        return s
 
-        if rms > NOISE_FLOOR and self.dsp_callback is not None:
-            self.dsp_callback(stable)  # DSP팀 함수 직접 호출 (큐 없음)
-
-    # ── 스트림 시작 / 중지 ────────────────────
-    def start(self):
-        """마이크 입력 스트림 시작"""
-        if self._running:
-            print("[경고] 이미 실행 중입니다.")
-            return
-
-        self._running = True
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            blocksize=BLOCK_SIZE,
-            dtype=DTYPE,
-            callback=self._audio_callback,
-            latency='low'             # sounddevice 내부 딜레이도 최소화
+    def __repr__(self):
+        return (
+            f"InputSignalStabilizer(target_rms={self.target_rms}, "
+            f"clip={self.clip_threshold}x, LP={self.prefilter_cutoff}Hz)"
         )
-        self._stream.start()
-        print(f"[시작] INMP441 마이크 스트림 ON")
-        print(f"       샘플레이트 : {SAMPLE_RATE}Hz")
-        print(f"       블록 크기  : {BLOCK_SIZE}")
-        print(f"       딜레이     : {BLOCK_SIZE / SAMPLE_RATE * 1000:.2f}ms")
-        print(f"       초당 콜백  : {SAMPLE_RATE // BLOCK_SIZE}회")
-
-    def stop(self):
-        """마이크 입력 스트림 중지"""
-        self._running = False
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-        self.vibration.cleanup()
-        print("[중지] 마이크 스트림 OFF")
-
-    # ── 진동 모니터 스레드 ────────────────────
-    def _vibration_monitor(self):
-        """GPIO 진동 감지 상태를 주기적으로 확인하는 스레드"""
-        while self._running:
-            if self.vibration.is_detected():
-                print("[층간소음 감지!] 진동 신호 확인됨")
-            time.sleep(0.05)  # 50ms 간격 폴링
-
-    def start_vibration_monitor(self):
-        """진동 센서 모니터링 스레드 시작"""
-        t = threading.Thread(target=self._vibration_monitor, daemon=True)
-        t.start()
-        print("[진동 모니터] 백그라운드 감시 시작")
-
-    # ── 샘플 수집 편의 메서드 ─────────────────
-    def collect_sample(self, duration: float = 5.0, label: str = "noise"):
-        """AI러닝팀용 노이즈 샘플 수집"""
-        return self.collector.collect(duration=duration, label=label)
 
 
-# ─────────────────────────────────────────────
-#  5. 실행 진입점
-# ─────────────────────────────────────────────
-def main():
-    print("=" * 55)
-    print("  층간소음 ANC - 센서 & 입력 모듈")
-    print("  INMP441 + Raspberry Pi 4B | 딜레이 0.33ms")
-    print("=" * 55)
+# =========================================================
+# 공개 인터페이스 — 메인 코드에서 이것만 호출
+# =========================================================
 
-    pipeline = SensorInputPipeline()
+def run_sensor_pipeline(
+    raw_signal : np.ndarray = None,
+    duration   : float      = 8.0,
+    mic_weight : float      = 0.6,
+    verbose    : bool       = True,
+) -> np.ndarray:
+    """
+    이형규 센서 & 입력 전체 파이프라인.
 
-    # DSP팀 콜백 등록 (실제 운영 시 DSP팀 함수로 교체)
-    def dsp_process(signal):
-        rms = np.sqrt(np.mean(signal ** 2))
-        print(f"[DSP 수신] 블록 길이: {len(signal)}  RMS: {rms:.4f}")
+    메인 코드(시뮬레이션) 연동:
+        from sensor_input import run_sensor_pipeline
+        input_signal = run_sensor_pipeline(raw_signal=sim_signal)
 
-    pipeline.set_dsp_callback(dsp_process)
+    실제 라즈베리파이 하드웨어 운용:
+        input_signal = run_sensor_pipeline()   # raw_signal=None → 직접 수집
 
-    # 마이크 스트림 & 진동 모니터 시작
-    pipeline.start()
-    pipeline.start_vibration_monitor()
+    Parameters
+    ----------
+    raw_signal  : 시뮬레이션용 DSP_FS 기준 신호.
+                  None 이면 하드웨어에서 직접 수집.
+    duration    : 수집 시간 (초)
+    mic_weight  : 마이크 가중치 (0~1)
+    verbose     : 통계 출력 여부
 
-    print("\n[실행 중] Ctrl+C 로 종료")
-    print("[참고] '[경고] 오버플로우' 메시지 반복 시 BLOCK_SIZE=32 로 변경\n")
+    Returns
+    -------
+    stabilized  : DSP_FS 기준 안정화된 입력 신호 (메인 코드 input_signal 대입)
+    collector   : SensorDataCollector (그래프 그릴 때 채널별 신호 접근용)
+    """
 
-    try:
-        while True:
-            time.sleep(1)
+    mic_cfg = I2SMicConfig(
+        sample_rate = MIC_FS,
+        bit_depth   = 32,
+        channels    = 1,
+        device_name = "default",
+        gain_db     = 6.0,
+        hp_cutoff   = 20.0,
+    )
 
-    except KeyboardInterrupt:
-        print("\n[종료 요청]")
-    finally:
-        pipeline.stop()
-        print("[종료 완료]")
+    mpu_cfg = MPU6050Config(
+        i2c_bus     = I2C_BUS,
+        address     = MPU6050_ADDR,
+        accel_range = MPU6050Config.RANGE_2G,
+        sample_rate = DSP_FS,
+        axis        = "z",
+        lp_cutoff   = 200.0,
+    )
 
+    if verbose:
+        print(f"\n  ★ [이형규] 센서 & 입력 파이프라인")
+        print(f"    {mic_cfg}")
+        print(f"    {mpu_cfg}")
 
-if __name__ == "__main__":
-    main()
+    collector = SensorDataCollector(mic_cfg, mpu_cfg)
+    collector.collect(
+        duration    = duration,
+        mic_weight  = mic_weight,
+        _sim_signal = raw_signal,   # None 이면 실제 HW 수집
+    )
+
+    if verbose:
+        collector.print_stats()
+
+    stabilizer = InputSignalStabilizer(
+        fs               = DSP_FS,
+        target_rms       = 0.3,
+        clip_threshold   = 2.5,
+        prefilter_cutoff = 450.0,
+    )
+    stabilized = stabilizer.stabilize(collector.fused)
+
+    if verbose:
+        print(f"    안정화기: {stabilizer}")
+        print(f"    안정화 후 RMS: {round(float(np.sqrt(np.mean(stabilized**2))), 4)}")
+
+    return stabilized, collector
