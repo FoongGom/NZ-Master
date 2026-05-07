@@ -20,11 +20,11 @@ import wave
 import time
 import threading
 import os
-import RPi.GPIO as GPIO
 
 
 # 라즈베리파이 GPIO (진동 감지용 - 선택사항)
 try:
+    import RPi.GPIO as GPIO
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
