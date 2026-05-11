@@ -1,0 +1,12 @@
+  File "/home/noisezero/noise_zero/main.py", line 13, in <module>
+    stream = p.open(format=FORMAT,
+                    channels=CHANNELS,
+                    rate=RATE,
+                    input=True,
+                    frames_per_buffer=CHUNK)
+  File "/home/noisezero/.local/lib/python3.13/site-packages/pyaudio/__init__.py", line 639, in open
+    stream = PyAudio.Stream(self, *args, **kwargs)
+  File "/home/noisezero/.local/lib/python3.13/site-packages/pyaudio/__init__.py", line 441, in __init__
+    self._stream = pa.open(**arguments)
+                   ~~~~~~~^^^^^^^^^^^^^
+OSError: [Errno -9996] Invalid input device (no default output device)
