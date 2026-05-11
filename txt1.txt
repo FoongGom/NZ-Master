@@ -25,8 +25,8 @@ Cannot connect to server request channel
 jack server is not running or cannot be started
 JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
 JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
-마이크 장치를 여는 중...
+마이크 연결 시도 중... (채널: 2, 샘플링레이트: 48000)
 Expression 'parameters->channelCount <= maxChans' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1514
 Expression 'ValidateParameters( inputParameters, hostApi, StreamDirection_In )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2818
 
-에러 발생: [Errno -9998] Invalid number of channels
+[에러 발생]: [Errno -9998] Invalid number of channels
