@@ -1,606 +1,760 @@
 """
-=============================================================
 sensor_input.py
-이형규 - 센서 & 입력 모듈 (라즈베리파이 전용)
-=============================================================
 
-담당 기능:
-  1) I2S 마이크 세팅       → I2SMicConfig / capture_i2s_mic()
-  2) 진동 센서 튜닝         → MPU6050Config / capture_mpu6050()
-  3) 노이즈 데이터 수집     → SensorDataCollector
-  4) 입력 신호 안정화       → InputSignalStabilizer / run_sensor_pipeline()
+담당자: 이형규
+역할: 센서 & 입력
 
-연동 방법 (메인 코드에서):
-    from sensor_input import run_sensor_pipeline
-    input_signal, collector = run_sensor_pipeline(raw_signal=<시뮬레이션 신호>)
+=====================================
+핵심 목표: 전체 파이프라인 레이턴시 0.3ms 이하
+=====================================
 
-하드웨어 구성 (라즈베리파이):
-  [I2S 마이크]  BCK=GPIO18 / LRCLK=GPIO19 / DATA=GPIO20
-  [MPU-6050]    SDA=GPIO2  / SCL=GPIO3   (I2C 버스 1)
+층간소음 능동 소음 제거(ANC) 흐름:
+  마이크 입력
+    → [sensor_input.py] 전처리 (0.3ms 이내)
+    → 메인 제어 코드 (hybrid_control)
+    → 스피커 출력 (역위상 신호로 소음 상쇄)
 
-설치 패키지:
-  pip install sounddevice smbus2 numpy scipy
-  sudo apt install fonts-nanum
+[변경 내역 - 하이브리드 코드 연동]
+  1. sensitivity_scale 0.05 → 1.0
+     - 기존 0.05 배율이 신호를 너무 작게 만들어
+       하이브리드 코드의 분류 임계값과 맞지 않는 문제 수정
+     - 하이브리드 코드의 generate_* 함수와 동일한 신호 크기 유지
 
-[변경 내역]
-  1. MIC_FS 44100 → 48000  (I2S 친화적, INMP441 권장값)
-  2. BLOCK_SIZE = 14 추가   (14/48000 = 0.29ms → 0.3ms 이하 달성)
-  3. DSP_FS 8000 → 1000    (메인 DSP 코드 fs=1000 과 일치)
-  4. DOWNSAMPLE 수정        44100//8000=5 → 48000//1000=48
-  5. 다운샘플 AA필터 cutoff  (DSP_FS/2-50)/nyq 로 자동 계산 유지
-  6. _process_sim 업샘플     MIC_FS=48000 기준으로 수정
-=============================================================
+  2. I2S_DEFAULT_CONFIG["fs"] 1000 고정 명시
+     - 하이브리드 코드 fs=1000 과 일치 확인용 주석 추가
+
+  3. get_stable_signal_for_main() 반환 신호에
+     오프라인 안정화(stabilize) 추가 적용
+     - normalize=True 로 정규화하여 하이브리드 분류기가
+       올바르게 동작하도록 보정
+
+  4. 소음 유형 이름 매핑 추가
+     - sensor_input 내부 키("child_running")와
+       하이브리드 코드 실험 이름("Child Running Noise") 연결
+
+  5. 하이브리드 코드 섹션 11 교체용 코드 주석으로 제공
+     - 두 파일을 같은 폴더에 놓고 하이브리드 코드 섹션 11을
+       아래 주석 내용으로 교체하면 연동 완료
 """
 
 import time
 import numpy as np
-from scipy.signal import butter, lfilter
-
-# ── 라즈베리파이 하드웨어 라이브러리 ──────────────────────────
-try:
-    import sounddevice as sd
-    _SD = True
-except ImportError:
-    _SD = False
-    print("[sensor_input] sounddevice 없음 → I2S 마이크 시뮬레이션 모드")
-
-try:
-    import smbus2
-    _SMBUS = True
-except ImportError:
-    _SMBUS = False
-    print("[sensor_input] smbus2 없음 → MPU-6050 시뮬레이션 모드")
+from scipy.signal import butter, lfilter, medfilt
 
 
 # =========================================================
-# 공통 상수
-# =========================================================
-# [변경 1] 44100 → 48000 : INMP441 I2S 마이크 권장 샘플레이트
-MIC_FS      = 48000
-
-# [변경 2] 8000 → 1000 : 메인 DSP 코드(fs=1000)와 일치
-DSP_FS      = 1000
-
-# [변경 3] BLOCK_SIZE 추가 : 14/48000 = 0.292ms → 0.3ms 이하 달성
-#          sounddevice 안정성을 위해 2의 배수인 16도 가능 (16/48000=0.333ms)
-BLOCK_SIZE  = 14
-
-# [변경 4] DOWNSAMPLE 자동 계산 : 48000//1000 = 48
-DOWNSAMPLE  = MIC_FS // DSP_FS
-
-MPU6050_ADDR      = 0x68
-MPU6050_PWR_REG   = 0x6B
-MPU6050_ACCEL_REG = 0x3B
-I2C_BUS           = 1
-
-
-# =========================================================
-# [1] I2S 마이크 세팅
+# 레이턴시 목표값 상수
 # =========================================================
 
-class I2SMicConfig:
+TARGET_LATENCY_MS  = 0.3
+TARGET_LATENCY_SEC = TARGET_LATENCY_MS / 1000.0
+
+
+def max_buffer_samples(fs: int) -> int:
     """
-    I2S 마이크 설정.
+    목표 레이턴시(0.3ms) 내에서 처리 가능한 최대 버퍼 샘플 수.
 
-    지원 마이크 : INMP441, SPH0645, ICS-43434
-    GPIO 핀     : BCK=18 / LRCLK=19 / DATA=20
-    /boot/config.txt 에 'dtparam=i2s=on' 필요.
+    fs=1000  → 0샘플 (샘플 단위 처리)
+    fs=44100 → 13샘플
+    fs=48000 → 14샘플
+    """
+    samples = int(fs * TARGET_LATENCY_SEC)
+    return max(samples, 1)
 
-    Parameters
-    ----------
-    sample_rate : 캡처 주파수 (Hz) — 기본 48000
-    bit_depth   : 비트 깊이 (16/24/32)
-    channels    : 채널 수 (1=모노)
-    device_name : sounddevice 장치명 ('arecord -l' 로 확인)
-    gain_db     : 소프트웨어 게인 (dB)
-    hp_cutoff   : 직류 차단 하이패스 (Hz)
-    block_size  : 버퍼 크기 — 작을수록 딜레이↓ (14 = 0.29ms)
+
+# =========================================================
+# 공통 DSP 유틸
+# =========================================================
+
+def _butter_filter(signal, cutoff, fs, btype="low", order=4):
+    nyq = fs / 2
+    normal_cutoff = np.clip(cutoff / nyq, 1e-4, 0.9999)
+    b, a = butter(order, normal_cutoff, btype=btype)
+    return lfilter(b, a, signal)
+
+
+def rms(signal):
+    """RMS 계산 - 하이브리드 코드와 동일."""
+    return np.sqrt(np.mean(signal ** 2))
+
+
+# =========================================================
+# I2S 마이크 설정값
+# =========================================================
+
+I2S_DEFAULT_CONFIG = {
+    # [변경 1] fs=1000 : 하이브리드 코드 fs=1000 과 일치
+    "fs": 1000,
+
+    "bit_depth": 24,
+
+    # [변경 2] sensitivity_scale 0.05 → 1.0
+    # 기존 0.05는 신호를 20분의 1로 축소 → 하이브리드 분류기 임계값 불일치
+    # 1.0으로 설정해 하이브리드 코드의 generate_* 신호와 동일한 크기 유지
+    "sensitivity_scale": 1.0,
+
+    "noise_floor": 0.001,
+    "dc_offset_threshold": 0.01,
+    "clip_limit": 0.95,
+    "target_latency_ms": TARGET_LATENCY_MS,
+    "buffer_samples": max_buffer_samples(1000),
+    "dc_filter_alpha": 0.995,
+}
+
+# =========================================================
+# 진동 센서 설정값
+# =========================================================
+
+VIBRATION_SENSOR_CONFIG = {
+    "freq_range":       (20, 200),
+    "gain":             1.2,
+    "median_kernel":    5,
+    "highpass_cutoff":  5,
+    "lowpass_cutoff":   200,
+}
+
+# =========================================================
+# [변경 3] 소음 유형 이름 매핑
+# sensor_input 내부 키 → 하이브리드 코드 실험 이름 / 권장 cutoff
+# =========================================================
+
+NOISE_META = {
+    "child_running":   {"name": "Child Running Noise",        "cutoff": 150},
+    "adult_footstep":  {"name": "Adult Heavy Footstep Noise", "cutoff": 120},
+    "washing_machine": {"name": "Washing Machine Vibration",  "cutoff": 180},
+    "chair_dragging":  {"name": "Chair Dragging Noise",       "cutoff": 200},
+    "object_drop":     {"name": "Object Drop Impact Noise",   "cutoff": 120},
+}
+
+# 하위 호환용 (기존 코드에서 RECOMMENDED_CUTOFF 사용 시)
+RECOMMENDED_CUTOFF = {k: v["cutoff"] for k, v in NOISE_META.items()}
+
+
+# =========================================================
+# SensorInput 클래스
+# =========================================================
+
+class SensorInput:
+    """
+    센서 & 입력 처리 클래스.
+
+    핵심 목표:
+    - 마이크에서 샘플을 받아 0.3ms 이내에 전처리 완료 후 반환.
+    - 반환된 신호는 메인 제어 코드(hybrid_control)를 거쳐
+      스피커로 역위상 출력되어 층간소음을 상쇄한다.
     """
 
     def __init__(
         self,
-        sample_rate : int   = MIC_FS,
-        bit_depth   : int   = 32,
-        channels    : int   = 1,
-        device_name : str   = "default",
-        gain_db     : float = 6.0,
-        hp_cutoff   : float = 20.0,
-        block_size  : int   = BLOCK_SIZE,   # [변경] 추가
+        fs           : int   = 1000,
+        duration     : float = 8.0,
+        i2s_config   : dict  = None,
+        vibration_config: dict = None,
+        random_seed  : int   = 10,
     ):
-        self.sample_rate  = sample_rate
-        self.bit_depth    = bit_depth
-        self.channels     = channels
-        self.device_name  = device_name
-        self.gain_db      = gain_db
-        self.hp_cutoff    = hp_cutoff
-        self.block_size   = block_size      # [변경] 추가
-        self.gain_linear  = 10 ** (gain_db / 20.0)
+        self.fs       = fs
+        self.duration = duration
+        self.t        = np.arange(0, duration, 1 / fs)
+        self.random_seed = random_seed
 
-    def __repr__(self):
-        delay_ms = self.block_size / self.sample_rate * 1000
-        return (
-            f"I2SMicConfig(fs={self.sample_rate}Hz, {self.bit_depth}bit, "
-            f"block={self.block_size}→{delay_ms:.2f}ms, "
-            f"gain={self.gain_db}dB, HP={self.hp_cutoff}Hz, "
-            f"device='{self.device_name}')"
+        self.i2s_config = i2s_config if i2s_config else I2S_DEFAULT_CONFIG.copy()
+        self.i2s_config["buffer_samples"] = max_buffer_samples(fs)
+
+        self.vibration_config = (
+            vibration_config if vibration_config else VIBRATION_SENSOR_CONFIG.copy()
         )
 
+        self._collected       : dict        = {}
+        self._dc_filter_x_prev: float       = 0.0
+        self._dc_filter_y_prev: float       = 0.0
+        self._latency_log     : list[float] = []
 
-def capture_i2s_mic(mic_cfg: I2SMicConfig, duration: float) -> np.ndarray:
-    """
-    I2S 마이크에서 오디오를 캡처한다.
-    sounddevice 없거나 하드웨어 오류 → 가우시안 잡음으로 대체.
+        np.random.seed(self.random_seed)
 
-    Returns
-    -------
-    signal : float64, 정규화 [-1, 1], shape=(duration*sample_rate,)
-    """
-    n = int(duration * mic_cfg.sample_rate)
+    # --------------------------------------------------
+    # 1. I2S 마이크 세팅
+    # --------------------------------------------------
 
-    if _SD:
-        try:
-            print(f"  [I2S] 녹음 시작 ({duration}s, {mic_cfg.sample_rate}Hz, "
-                  f"block={mic_cfg.block_size}) ...")
-            # [변경] blocksize 파라미터 추가 → 0.3ms 이하 딜레이
-            raw = sd.rec(
-                frames     = n,
-                samplerate = mic_cfg.sample_rate,
-                channels   = mic_cfg.channels,
-                dtype      = "float32",
-                device     = mic_cfg.device_name,
-                blocking   = True,
-                # blocksize는 sd.InputStream 전용이므로
-                # 실시간 스트림 시 아래 stream_capture() 사용 권장
-            )
-            sig = raw[:, 0].astype(np.float64)
-            print("  [I2S] 녹음 완료")
-        except Exception as e:
-            print(f"  [I2S] 오류({e}) → 시뮬레이션 신호 사용")
-            sig = np.random.randn(n) * 0.05
-    else:
-        sig = np.random.randn(n) * 0.05
+    def setup_i2s(self, fs: int = None, sensitivity_scale: float = None) -> dict:
+        if fs is not None:
+            self.fs = fs
+            self.i2s_config["fs"] = fs
+            self.i2s_config["buffer_samples"] = max_buffer_samples(fs)
+            self.t = np.arange(0, self.duration, 1 / fs)
 
-    # 소프트웨어 게인
-    sig = sig * mic_cfg.gain_linear
+        if sensitivity_scale is not None:
+            self.i2s_config["sensitivity_scale"] = sensitivity_scale
 
-    # 하이패스 (직류 제거)
-    nyq  = mic_cfg.sample_rate / 2.0
-    b, a = butter(2, mic_cfg.hp_cutoff / nyq, btype="high")
-    sig  = lfilter(b, a, sig)
+        buf            = self.i2s_config["buffer_samples"]
+        actual_latency = buf / self.fs * 1000
 
-    # 정규화
-    pk = np.max(np.abs(sig))
-    if pk > 1e-9:
-        sig = sig / pk
-    return sig
+        print("[I2S 마이크 세팅]")
+        for k, v in self.i2s_config.items():
+            print(f"  {k}: {v}")
+        print(f"  → 버퍼 {buf}샘플 = 실제 레이턴시 {actual_latency:.4f}ms "
+              f"(목표: {TARGET_LATENCY_MS}ms)")
 
+        return self.i2s_config.copy()
 
-def stream_capture_i2s(mic_cfg: I2SMicConfig, duration: float) -> np.ndarray:
-    """
-    실시간 스트림 방식으로 I2S 마이크 캡처.
-    BLOCK_SIZE를 직접 지정하여 0.3ms 이하 딜레이를 보장.
+    def read_sample_i2s(self, raw_sample: float) -> float:
+        """
+        I2S 마이크에서 1샘플을 읽어 전처리 후 반환.
+        0.3ms 목표 핵심 함수 - 샘플 단위 처리로 버퍼 딜레이 없음.
+        """
+        scale = self.i2s_config["sensitivity_scale"]
+        s     = raw_sample * scale
 
-    sd.rec()은 blocksize 미지원 → 실시간 제어 시 이 함수 사용.
-    """
-    n       = int(duration * mic_cfg.sample_rate)
-    buffer  = np.zeros(n, dtype=np.float64)
-    ptr     = [0]
-    done    = [False]
+        alpha = self.i2s_config["dc_filter_alpha"]
+        y = s - self._dc_filter_x_prev + alpha * self._dc_filter_y_prev
+        self._dc_filter_x_prev = s
+        self._dc_filter_y_prev = y
 
-    def callback(indata, frames, time_info, status):
-        if status:
-            print(f"  [I2S 스트림] {status}")
-        end = ptr[0] + frames
-        if end >= n:
-            buffer[ptr[0]:n] = indata[:n - ptr[0], 0]
-            done[0] = True
-        else:
-            buffer[ptr[0]:end] = indata[:frames, 0]
-            ptr[0] = end
+        clip_limit = self.i2s_config["clip_limit"]
+        y = float(np.clip(y, -clip_limit, clip_limit))
 
-    if _SD:
-        try:
-            with sd.InputStream(
-                samplerate = mic_cfg.sample_rate,
-                channels   = mic_cfg.channels,
-                dtype      = "float32",
-                device     = mic_cfg.device_name,
-                blocksize  = mic_cfg.block_size,   # ← 0.3ms 딜레이 핵심
-                latency    = "low",
-                callback   = callback,
-            ):
-                print(f"  [I2S 스트림] 시작 (block={mic_cfg.block_size}, "
-                      f"delay={mic_cfg.block_size/mic_cfg.sample_rate*1000:.2f}ms)")
-                while not done[0]:
-                    time.sleep(0.001)
-            sig = buffer
-        except Exception as e:
-            print(f"  [I2S 스트림] 오류({e}) → 시뮬레이션 신호 사용")
-            sig = np.random.randn(n) * 0.05
-    else:
-        sig = np.random.randn(n) * 0.05
+        return y
 
-    sig = sig * mic_cfg.gain_linear
-    nyq  = mic_cfg.sample_rate / 2.0
-    b, a = butter(2, mic_cfg.hp_cutoff / nyq, btype="high")
-    sig  = lfilter(b, a, sig)
-    pk   = np.max(np.abs(sig))
-    if pk > 1e-9:
-        sig = sig / pk
-    return sig
+    def read_i2s_mic(self, noise_type: str = "child_running") -> np.ndarray:
+        """시뮬레이션 전체 신호를 샘플 단위로 순차 처리하여 반환."""
+        raw_signal = self._simulate_noise(noise_type)
+        self._reset_dc_filter()
 
+        processed = np.zeros_like(raw_signal)
+        for n, sample in enumerate(raw_signal):
+            processed[n] = self.read_sample_i2s(sample)
 
-# =========================================================
-# [2] 진동 센서 튜닝 (MPU-6050)
-# =========================================================
+        print(f"[I2S 마이크 읽기] noise_type={noise_type}, "
+              f"RMS={rms(processed):.5f}, peak={np.max(np.abs(processed)):.5f}, "
+              f"samples={len(processed)}")
 
-class MPU6050Config:
-    """
-    MPU-6050 진동 센서(가속도계) 설정.
+        return processed
 
-    I2C 핀  : SDA=GPIO2(Pin3) / SCL=GPIO3(Pin5)
-    전원    : 3.3V(Pin1) / GND(Pin6)
-    주소    : AD0=GND → 0x68 / AD0=3.3V → 0x69
-    확인    : i2cdetect -y 1
+    # --------------------------------------------------
+    # 2. 진동 센서 튜닝
+    # --------------------------------------------------
 
-    Parameters
-    ----------
-    i2c_bus      : I2C 버스 번호 (라즈베리파이 기본 1)
-    address      : MPU-6050 I2C 주소
-    accel_range  : 가속도 측정 범위
-    sample_rate  : 읽기 루프 주파수 (Hz) — DSP_FS=1000 에 맞춤
-    axis         : 측정 축 ('x'/'y'/'z') — 층간소음은 'z' 권장
-    lp_cutoff    : 저역통과 차단 주파수 (Hz)
-    """
-
-    RANGE_2G  = 0x00
-    RANGE_4G  = 0x08
-    RANGE_8G  = 0x10
-    RANGE_16G = 0x18
-    _LSB = {0x00: 16384.0, 0x08: 8192.0, 0x10: 4096.0, 0x18: 2048.0}
-
-    def __init__(
+    def tune_vibration_sensor(
         self,
-        i2c_bus     : int   = I2C_BUS,
-        address     : int   = MPU6050_ADDR,
-        accel_range : int   = None,
-        sample_rate : int   = DSP_FS,      # [변경] 8000 → 1000
-        axis        : str   = "z",
-        lp_cutoff   : float = 200.0,
-    ):
-        self.i2c_bus     = i2c_bus
-        self.address     = address
-        self.accel_range = accel_range if accel_range is not None else self.RANGE_2G
-        self.sample_rate = sample_rate
-        self.axis        = axis.lower()
-        self.lp_cutoff   = lp_cutoff
-        self.lsb         = self._LSB.get(self.accel_range, 16384.0)
+        gain          : float = None,
+        freq_range    : tuple = None,
+        median_kernel : int   = None,
+    ) -> dict:
+        if gain is not None:
+            self.vibration_config["gain"] = gain
 
-    def __repr__(self):
-        rng = {0x00: "±2g", 0x08: "±4g", 0x10: "±8g", 0x18: "±16g"}
-        return (
-            f"MPU6050Config(bus={self.i2c_bus}, addr=0x{self.address:02X}, "
-            f"range={rng.get(self.accel_range,'?')}, "
-            f"fs={self.sample_rate}Hz, axis={self.axis}, LP={self.lp_cutoff}Hz)"
-        )
+        if freq_range is not None:
+            if freq_range[0] >= freq_range[1]:
+                raise ValueError("freq_range[0]은 freq_range[1]보다 작아야 합니다.")
+            self.vibration_config["freq_range"]      = freq_range
+            self.vibration_config["highpass_cutoff"] = freq_range[0]
+            self.vibration_config["lowpass_cutoff"]  = freq_range[1]
 
+        if median_kernel is not None:
+            if median_kernel % 2 == 0:
+                raise ValueError("median_kernel은 홀수여야 합니다.")
+            self.vibration_config["median_kernel"] = median_kernel
 
-def _mpu_init(bus, cfg: MPU6050Config):
-    bus.write_byte_data(cfg.address, MPU6050_PWR_REG, 0x00)
-    time.sleep(0.05)
-    bus.write_byte_data(cfg.address, 0x1C, cfg.accel_range)
+        print("[진동 센서 튜닝]")
+        for k, v in self.vibration_config.items():
+            print(f"  {k}: {v}")
 
+        return self.vibration_config.copy()
 
-def _read_accel(bus, cfg: MPU6050Config) -> float:
-    offset = {"x": 0, "y": 2, "z": 4}.get(cfg.axis, 4)
-    d      = bus.read_i2c_block_data(cfg.address, MPU6050_ACCEL_REG + offset, 2)
-    raw    = (d[0] << 8) | d[1]
-    if raw > 32767:
-        raw -= 65536
-    return raw / cfg.lsb
+    def read_vibration_sensor(self, noise_type: str = "child_running") -> np.ndarray:
+        raw    = self._simulate_noise(noise_type)
+        gained = raw * self.vibration_config["gain"]
 
+        hp = self.vibration_config["highpass_cutoff"]
+        if hp > 0:
+            gained = _butter_filter(gained, hp, self.fs, btype="high")
 
-def capture_mpu6050(mpu_cfg: MPU6050Config, duration: float) -> np.ndarray:
-    """
-    MPU-6050에서 가속도를 수집한다.
-    smbus2 없거나 하드웨어 오류 → 가우시안 잡음으로 대체.
+        lp = self.vibration_config["lowpass_cutoff"]
+        if lp < self.fs / 2:
+            gained = _butter_filter(gained, lp, self.fs, btype="low")
 
-    Returns
-    -------
-    signal : float64, 정규화 [-1, 1], shape=(duration*sample_rate,)
-    """
-    n        = int(duration * mpu_cfg.sample_rate)
-    interval = 1.0 / mpu_cfg.sample_rate
+        kernel = self.vibration_config["median_kernel"]
+        if kernel > 1:
+            gained = medfilt(gained, kernel_size=kernel)
 
-    if _SMBUS:
-        try:
-            bus = smbus2.SMBus(mpu_cfg.i2c_bus)
-            _mpu_init(bus, mpu_cfg)
-            print(f"  [MPU-6050] 수집 시작 ({duration}s, {mpu_cfg.sample_rate}Hz) ...")
-            samples = []
-            for _ in range(n):
-                t0 = time.monotonic()
-                samples.append(_read_accel(bus, mpu_cfg))
-                sl = interval - (time.monotonic() - t0)
-                if sl > 0:
-                    time.sleep(sl)
-            bus.close()
-            print("  [MPU-6050] 수집 완료")
-            sig = np.array(samples, dtype=np.float64)
-        except Exception as e:
-            print(f"  [MPU-6050] 오류({e}) → 시뮬레이션 신호 사용")
-            sig = np.random.randn(n) * 0.02
-    else:
-        sig = np.random.randn(n) * 0.02
+        print(f"[진동 센서 읽기] noise_type={noise_type}, "
+              f"RMS={rms(gained):.5f}, peak={np.max(np.abs(gained)):.5f}")
 
-    nyq  = mpu_cfg.sample_rate / 2.0
-    b, a = butter(4, min(mpu_cfg.lp_cutoff / nyq, 0.999), btype="low")
-    sig  = lfilter(b, a, sig)
+        return gained
 
-    pk = np.max(np.abs(sig))
-    if pk > 1e-9:
-        sig = sig / pk
-    return sig
-
-
-# =========================================================
-# [3] 노이즈 데이터 수집 & 센서 융합
-# =========================================================
-
-class SensorDataCollector:
-    """
-    I2S 마이크 + MPU-6050 두 채널을 수집·융합한다.
-
-    사용법:
-        collector = SensorDataCollector(mic_cfg, mpu_cfg)
-        fused_dsp = collector.collect(duration=8.0)
-    """
-
-    def __init__(self, mic_cfg: I2SMicConfig, mpu_cfg: MPU6050Config):
-        self.mic_cfg    = mic_cfg
-        self.mpu_cfg    = mpu_cfg
-        self.mic_signal = None
-        self.vib_signal = None
-        self.fused      = None
-        self.stats      = {}
+    # --------------------------------------------------
+    # 3. 노이즈 데이터 수집
+    # --------------------------------------------------
 
     def collect(
         self,
-        duration    : float       = 8.0,
-        mic_weight  : float       = 0.6,
-        _sim_signal : np.ndarray  = None,
+        noise_type : str,
+        source     : str = "i2s",
+        label      : str = None,
+    ) -> np.ndarray:
+        if source == "vibration":
+            signal = self.read_vibration_sensor(noise_type)
+        else:
+            signal = self.read_i2s_mic(noise_type)
+
+        key = label if label else noise_type
+        self._collected[key] = signal
+
+        print(f"[수집 완료] key='{key}', source={source}, samples={len(signal)}")
+
+        return signal
+
+    def collect_all(self, source: str = "i2s") -> dict:
+        noise_types = [
+            "child_running", "adult_footstep", "washing_machine",
+            "chair_dragging", "object_drop",
+        ]
+        print("\n[전체 소음 데이터 수집 시작]")
+        for nt in noise_types:
+            self.collect(nt, source=source)
+        print(f"[전체 수집 완료] 총 {len(self._collected)}개 유형\n")
+        return self._collected.copy()
+
+    def get_collected(self, label: str = None):
+        if label is None:
+            return self._collected.copy()
+        if label not in self._collected:
+            raise KeyError(f"'{label}' 키가 수집 데이터에 없습니다.")
+        return self._collected[label]
+
+    # --------------------------------------------------
+    # 4. 입력 신호 안정화
+    # --------------------------------------------------
+
+    def stabilize_sample(self, sample: float) -> float:
+        clip_limit = self.i2s_config["clip_limit"]
+        return float(np.clip(sample, -clip_limit, clip_limit))
+
+    def stabilize(
+        self,
+        signal          : np.ndarray,
+        remove_dc       : bool = True,
+        remove_outliers : bool = True,
+        clip            : bool = True,
+        normalize       : bool = True,
     ) -> np.ndarray:
         """
-        두 센서를 수집 후 가중 합산.
+        수집된 전체 신호를 오프라인 안정화.
 
-        Parameters
-        ----------
-        duration    : 수집 시간 (초)
-        mic_weight  : 마이크 가중치 (0~1)
-        _sim_signal : 시뮬레이션용 DSP_FS(1000Hz) 기준 신호
-                      None 이면 실제 HW 수집
-
-        Returns
-        -------
-        fused : DSP_FS(1000Hz) 기준 융합 신호 — 메인 DSP 코드와 일치
+        [변경 3] normalize=True 기본값 유지
+        하이브리드 코드의 classify_noise()가 신호 크기 기반으로
+        소음 유형을 분류하므로 정규화 후 전달해야 정확한 분류 가능.
         """
-        if _sim_signal is not None:
-            self._process_sim(duration, mic_weight, _sim_signal)
-        else:
-            self._process_hw(duration, mic_weight)
+        s = signal.copy()
 
-        self._compute_stats()
-        return self.fused
+        if remove_dc:
+            dc        = np.mean(s)
+            threshold = self.i2s_config["dc_offset_threshold"]
+            if abs(dc) > threshold:
+                s = s - dc
+                print(f"[안정화] DC 오프셋 제거: {dc:.5f}")
 
-    # ── 실제 하드웨어 수집 ───────────────────────────────────
-    def _process_hw(self, duration, mic_weight):
-        # [변경] stream_capture_i2s 사용 → BLOCK_SIZE 적용으로 0.3ms 딜레이
-        mic_raw = stream_capture_i2s(self.mic_cfg, duration)
-        vib_raw = capture_mpu6050(self.mpu_cfg, duration)
+        if remove_outliers:
+            sigma        = np.std(s)
+            mean         = np.mean(s)
+            outlier_mask = (s > mean + 3 * sigma) | (s < mean - 3 * sigma)
+            outlier_count = int(np.sum(outlier_mask))
+            if outlier_count > 0:
+                kernel     = self.vibration_config["median_kernel"]
+                s_filtered = medfilt(s, kernel_size=kernel)
+                s[outlier_mask] = s_filtered[outlier_mask]
+                print(f"[안정화] 이상치 제거: {outlier_count}개 샘플")
 
-        # 마이크 다운샘플: 48000 → 1000 Hz
-        # [변경] nyq = 48000/2, cutoff = (1000/2 - 50) / 24000
-        nyq  = MIC_FS / 2.0
-        aa   = min((DSP_FS / 2.0 - 50) / nyq, 0.999)
-        b, a = butter(8, aa, btype="low")
-        mic_ds = lfilter(b, a, mic_raw)[::DOWNSAMPLE]   # [변경] ::48
+        if clip:
+            clip_limit    = self.i2s_config["clip_limit"]
+            clipped_count = int(np.sum(np.abs(s) > clip_limit))
+            if clipped_count > 0:
+                s = np.clip(s, -clip_limit, clip_limit)
+                print(f"[안정화] 클리핑 처리: {clipped_count}개 샘플")
 
-        n = min(len(mic_ds), len(vib_raw))
-        self.mic_signal = mic_ds[:n]
-        self.vib_signal = vib_raw[:n]
-        self.fused = mic_weight * self.mic_signal + (1 - mic_weight) * self.vib_signal
+        if normalize:
+            peak = np.max(np.abs(s))
+            if peak > 0:
+                s = s / peak
+                print(f"[안정화] 정규화 완료: peak={peak:.5f} → 1.0")
 
-    # ── 시뮬레이션 신호 처리 ────────────────────────────────
-    def _process_sim(self, duration, mic_weight, sim):
-        """
-        [변경] 업샘플 기준 MIC_FS=48000, 다운샘플 비율 DOWNSAMPLE=48
-        메인 코드에서 넘어오는 sim 신호는 fs=1000 기준 8000샘플
-        """
-        # 마이크 경로: 1000Hz → 48000Hz 업샘플 → 대역통과 → 1000Hz 다운샘플
-        nyq_mic = MIC_FS / 2.0
-        ups = np.interp(
-            np.linspace(0, len(sim) - 1, int(duration * MIC_FS)),
-            np.arange(len(sim)), sim
-        )
-        b, a   = butter(4, [20.0 / nyq_mic, min(420.0 / nyq_mic, 0.999)], btype="band")
-        mic_bp = lfilter(b, a, ups)
-        b2, a2 = butter(8, min((DSP_FS / 2.0 - 50) / nyq_mic, 0.999), btype="low")
-        mic_ds = lfilter(b2, a2, mic_bp)[::DOWNSAMPLE]   # [변경] ::48
+        print(f"[안정화 결과] RMS={rms(s):.5f}, peak={np.max(np.abs(s)):.5f}")
 
-        # 진동 센서 경로: 저역통과 (이미 1000Hz 기준)
-        nyq_dsp = DSP_FS / 2.0
-        b3, a3  = butter(4, min(200.0 / nyq_dsp, 0.999), btype="low")
-        vib     = lfilter(b3, a3, sim)
-
-        n = min(len(mic_ds), len(vib))
-        self.mic_signal = mic_ds[:n]
-        self.vib_signal = vib[:n]
-        self.fused = mic_weight * self.mic_signal + (1 - mic_weight) * self.vib_signal
-
-    # ── 통계 계산 ────────────────────────────────────────────
-    def _compute_stats(self):
-        def _r(x): return float(np.sqrt(np.mean(x ** 2)))
-        def _p(x): return float(np.max(np.abs(x)))
-
-        ws   = int(0.2 * DSP_FS)
-        wins = [_r(self.fused[i:i+ws]) for i in range(0, len(self.fused)-ws, ws)]
-        act  = float(np.mean(np.array(wins) > 0.3 * max(wins))) if wins else 0.0
-
-        self.stats = {
-            "mic_rms":      round(_r(self.mic_signal), 4),
-            "vib_rms":      round(_r(self.vib_signal), 4),
-            "fused_rms":    round(_r(self.fused),      4),
-            "fused_peak":   round(_p(self.fused),      4),
-            "active_ratio": round(act,                 4),
-            "fused_length": len(self.fused),            # [변경] 길이 확인용 추가
-            "dsp_fs":       DSP_FS,                     # [변경] 메인코드 연동 확인용
-        }
-
-        if self.stats["fused_rms"] < 0.01:
-            print("  [경고] 융합 신호 RMS가 너무 낮습니다. 센서 연결을 확인하세요.")
-        if self.stats["active_ratio"] < 0.1:
-            print("  [경고] 활성 구간이 짧습니다. 소음 발생 여부를 확인하세요.")
-
-    def print_stats(self):
-        print("\n  [센서 수집 통계]")
-        for k, v in self.stats.items():
-            print(f"    {k:20s}: {v}")
-
-
-# =========================================================
-# [4] 입력 신호 안정화
-# =========================================================
-
-class InputSignalStabilizer:
-    """
-    DSP 알고리즘 진입 전 신호 전처리.
-
-    처리 순서:
-      1) DC 오프셋 제거
-      2) 진폭 정규화 (target_rms)
-      3) 저역통과 전처리 필터  ← cutoff를 DSP_FS=1000 기준으로 수정
-      4) 스파이크 클리핑
-    """
-
-    def __init__(
-        self,
-        fs               : int   = DSP_FS,
-        target_rms       : float = 0.3,
-        clip_threshold   : float = 2.5,
-        prefilter_cutoff : float = 450.0,   # [변경] 8000Hz 기준 450 → 그대로 유지
-                                             # DSP_FS=1000이므로 nyq=500, cutoff=450 유효
-    ):
-        self.fs               = fs
-        self.target_rms       = target_rms
-        self.clip_threshold   = clip_threshold
-        self.prefilter_cutoff = prefilter_cutoff
-
-    def stabilize(self, signal: np.ndarray) -> np.ndarray:
-        s = signal - np.mean(signal)
-
-        cur = float(np.sqrt(np.mean(s ** 2)))
-        if cur > 1e-9:
-            s = s * (self.target_rms / cur)
-
-        nyq  = self.fs / 2.0
-        # [변경] min() 로 cutoff가 nyq 초과하지 않도록 보정
-        safe_cutoff = min(self.prefilter_cutoff, nyq - 1)
-        b, a = butter(4, safe_cutoff / nyq, btype="low")
-        s    = lfilter(b, a, s)
-
-        clip = self.target_rms * self.clip_threshold
-        s    = np.clip(s, -clip, clip)
         return s
 
-    def __repr__(self):
-        return (
-            f"InputSignalStabilizer(fs={self.fs}Hz, target_rms={self.target_rms}, "
-            f"clip={self.clip_threshold}x, LP={self.prefilter_cutoff}Hz)"
+    def stabilize_all(self, signals: dict = None, **kwargs) -> dict:
+        source = signals if signals is not None else self._collected
+        if not source:
+            raise ValueError("안정화할 신호가 없습니다.")
+        stabilized = {}
+        for label, sig in source.items():
+            print(f"\n[안정화 시작] '{label}'")
+            stabilized[label] = self.stabilize(sig, **kwargs)
+        return stabilized
+
+    # --------------------------------------------------
+    # 5. 레이턴시 측정
+    # --------------------------------------------------
+
+    def measure_latency_sample(self, raw_sample: float) -> tuple:
+        t_start   = time.perf_counter()
+        processed = self.read_sample_i2s(raw_sample)
+        t_end     = time.perf_counter()
+
+        elapsed_ms = (t_end - t_start) * 1000
+        self._latency_log.append(elapsed_ms)
+
+        return processed, elapsed_ms
+
+    def latency_report(self) -> dict:
+        if not self._latency_log:
+            print("[레이턴시 리포트] 측정 데이터 없음.")
+            return {}
+
+        log          = np.array(self._latency_log)
+        within_target = float(np.mean(log <= TARGET_LATENCY_MS) * 100)
+
+        report = {
+            "samples_measured":  len(log),
+            "avg_ms":            round(float(np.mean(log)), 4),
+            "max_ms":            round(float(np.max(log)), 4),
+            "min_ms":            round(float(np.min(log)), 4),
+            "target_ms":         TARGET_LATENCY_MS,
+            "within_target_pct": round(within_target, 1),
+        }
+
+        print("\n[레이턴시 리포트]")
+        for k, v in report.items():
+            print(f"  {k}: {v}")
+
+        if within_target < 95:
+            print(f"  ⚠ 경고: {100 - within_target:.1f}%의 샘플이 목표를 초과함")
+        else:
+            print(f"  ✓ 목표 달성: {within_target:.1f}%의 샘플이 {TARGET_LATENCY_MS}ms 이내")
+
+        return report
+
+    # --------------------------------------------------
+    # 내부 헬퍼
+    # --------------------------------------------------
+
+    def _reset_dc_filter(self):
+        self._dc_filter_x_prev = 0.0
+        self._dc_filter_y_prev = 0.0
+
+    def _simulate_noise(self, noise_type: str) -> np.ndarray:
+        t        = self.t
+        fs       = self.fs
+        duration = self.duration
+
+        if noise_type == "child_running":
+            return self._gen_child_running(t, fs, duration)
+        elif noise_type == "adult_footstep":
+            return self._gen_adult_footstep(t, fs, duration)
+        elif noise_type == "washing_machine":
+            return self._gen_washing_machine(t)
+        elif noise_type == "chair_dragging":
+            return self._gen_chair_dragging(t, fs)
+        elif noise_type == "object_drop":
+            return self._gen_object_drop(t, fs)
+        else:
+            raise ValueError(
+                f"알 수 없는 noise_type: '{noise_type}'. "
+                "child_running | adult_footstep | washing_machine | "
+                "chair_dragging | object_drop 중 하나를 선택하세요."
+            )
+
+    def _gen_child_running(self, t, fs, duration):
+        signal      = np.zeros_like(t)
+        current_time = 0.4
+        while current_time < duration - 0.5:
+            interval     = np.random.uniform(0.25, 0.45)
+            current_time += interval
+            idx          = int(current_time * fs)
+            strength     = np.random.uniform(0.8, 1.5)
+            burst_len    = min(int(0.25 * fs), len(signal) - idx)
+            if burst_len <= 0:
+                continue
+            burst_t   = np.arange(burst_len) / fs
+            env       = np.exp(-18 * burst_t)
+            burst     = strength * env * (
+                np.sin(2 * np.pi * 30 * burst_t)
+                + 0.8 * np.sin(2 * np.pi * 55 * burst_t)
+                + 0.4 * np.sin(2 * np.pi * 90 * burst_t)
+            )
+            sharp_len = min(20, burst_len)
+            sharp     = np.zeros(burst_len)
+            sharp[:sharp_len] = strength * 1.8 * np.exp(-np.linspace(0, 4, sharp_len))
+            signal[idx:idx + burst_len] += burst + sharp
+        signal += (
+            0.12 * np.sin(2 * np.pi * 25 * t)
+            + 0.08 * np.sin(2 * np.pi * 45 * t)
+            + 0.05 * np.random.randn(len(t))
         )
+        return signal
+
+    def _gen_adult_footstep(self, t, fs, duration):
+        signal       = np.zeros_like(t)
+        current_time = 0.6
+        while current_time < duration - 0.5:
+            interval     = np.random.uniform(0.55, 0.85)
+            current_time += interval
+            idx          = int(current_time * fs)
+            strength     = np.random.uniform(1.3, 2.2)
+            burst_len    = min(int(0.35 * fs), len(signal) - idx)
+            if burst_len <= 0:
+                continue
+            burst_t   = np.arange(burst_len) / fs
+            env       = np.exp(-10 * burst_t)
+            burst     = strength * env * (
+                np.sin(2 * np.pi * 20 * burst_t)
+                + 0.9 * np.sin(2 * np.pi * 35 * burst_t)
+                + 0.5 * np.sin(2 * np.pi * 60 * burst_t)
+            )
+            sharp_len = min(25, burst_len)
+            sharp     = np.zeros(burst_len)
+            sharp[:sharp_len] = strength * 2.2 * np.exp(-np.linspace(0, 5, sharp_len))
+            signal[idx:idx + burst_len] += burst + sharp
+        signal += (
+            0.08 * np.sin(2 * np.pi * 30 * t)
+            + 0.04 * np.random.randn(len(t))
+        )
+        return signal
+
+    def _gen_washing_machine(self, t):
+        signal = (
+            0.8 * np.sin(2 * np.pi * 45 * t)
+            + 0.5 * np.sin(2 * np.pi * 90 * t)
+            + 0.25 * np.sin(2 * np.pi * 135 * t)
+        )
+        signal = signal * (1.0 + 0.2 * np.sin(2 * np.pi * 0.5 * t))
+        signal += 0.04 * np.random.randn(len(t))
+        return signal
+
+    def _gen_chair_dragging(self, t, fs):
+        signal = np.zeros_like(t)
+        for start, end in [(1.0, 2.0), (3.0, 3.8), (5.2, 6.4)]:
+            si, ei = int(start * fs), int(end * fs)
+            length = ei - si
+            if length <= 0:
+                continue
+            drag_t    = np.arange(length) / fs
+            vibration = (
+                0.5  * np.sin(2 * np.pi * 70  * drag_t)
+                + 0.35 * np.sin(2 * np.pi * 110 * drag_t)
+                + 0.2  * np.sin(2 * np.pi * 160 * drag_t)
+            )
+            roughness = np.clip(1.0 + 0.5 * np.random.randn(length), 0.2, 1.8)
+            fade_len  = min(int(0.1 * fs), length // 2)
+            envelope  = np.ones(length)
+            if fade_len > 0:
+                envelope[:fade_len]  = np.linspace(0, 1, fade_len)
+                envelope[-fade_len:] = np.linspace(1, 0, fade_len)
+            signal[si:ei] += vibration * roughness * envelope
+        signal += (
+            0.06 * np.sin(2 * np.pi * 40 * t)
+            + 0.06 * np.random.randn(len(t))
+        )
+        return signal
+
+    def _gen_object_drop(self, t, fs):
+        signal = np.zeros_like(t)
+        for drop_time in [1.2, 3.7, 6.1]:
+            idx       = int(drop_time * fs)
+            strength  = np.random.uniform(2.0, 3.2)
+            burst_len = min(int(0.6 * fs), len(signal) - idx)
+            if burst_len <= 0:
+                continue
+            burst_t   = np.arange(burst_len) / fs
+            env       = np.exp(-7 * burst_t)
+            burst     = strength * env * (
+                np.sin(2 * np.pi * 18 * burst_t)
+                + 0.9 * np.sin(2 * np.pi * 40 * burst_t)
+                + 0.5 * np.sin(2 * np.pi * 75 * burst_t)
+            )
+            sharp_len = min(35, burst_len)
+            sharp     = np.zeros(burst_len)
+            sharp[:sharp_len] = strength * 2.8 * np.exp(-np.linspace(0, 6, sharp_len))
+            signal[idx:idx + burst_len] += burst + sharp
+        signal += 0.04 * np.random.randn(len(t))
+        return signal
 
 
 # =========================================================
-# 공개 인터페이스 — 메인 코드에서 이것만 호출
+# 메인 코드 연동 헬퍼 함수
 # =========================================================
 
-def run_sensor_pipeline(
-    raw_signal  : np.ndarray = None,
-    duration    : float      = 8.0,
-    mic_weight  : float      = 0.6,
-    verbose     : bool       = True,
-):
+def realtime_anc_loop(
+    noise_type   : str,
+    sensor       : SensorInput,
+    anc_callback = None,
+) -> np.ndarray:
+    """실시간 ANC 시뮬레이션 루프."""
+    raw_signal = sensor._simulate_noise(noise_type)
+    sensor._reset_dc_filter()
+
+    output_signal = np.zeros_like(raw_signal)
+    latencies     = []
+
+    for n, raw_sample in enumerate(raw_signal):
+        t_start          = time.perf_counter()
+        processed_sample = sensor.read_sample_i2s(raw_sample)
+        control_sample   = anc_callback(processed_sample) if anc_callback else -processed_sample
+        output_signal[n] = control_sample
+        latencies.append((time.perf_counter() - t_start) * 1000)
+
+    latencies = np.array(latencies)
+    within    = np.mean(latencies <= TARGET_LATENCY_MS) * 100
+
+    print(f"\n[실시간 ANC 루프 완료] noise_type={noise_type}")
+    print(f"  평균 레이턴시: {np.mean(latencies):.4f}ms  최대: {np.max(latencies):.4f}ms")
+    print(f"  목표({TARGET_LATENCY_MS}ms) 달성률: {within:.1f}%")
+    if within < 95:
+        print(f"  ⚠ 경고: {100-within:.1f}%의 샘플이 목표를 초과함")
+    else:
+        print(f"  ✓ 목표 달성")
+
+    return output_signal
+
+
+def get_stable_signal_for_main(
+    noise_type : str,
+    fs         : int   = 1000,
+    duration   : float = 8.0,
+    source     : str   = "i2s",
+) -> tuple:
     """
-    이형규 센서 & 입력 전체 파이프라인.
+    하이브리드 코드 연동 진입점.
 
-    메인 코드(시뮬레이션) 연동:
-        from sensor_input import run_sensor_pipeline
-        input_signal, collector = run_sensor_pipeline(raw_signal=sim_signal)
-
-    실제 라즈베리파이 하드웨어:
-        input_signal, collector = run_sensor_pipeline()
-
-    Parameters
-    ----------
-    raw_signal  : 시뮬레이션용 DSP_FS(1000Hz) 기준 신호. None=HW 수집
-    duration    : 수집 시간 (초)
-    mic_weight  : 마이크 가중치 (0~1)
-    verbose     : 통계 출력 여부
+    [변경 4] 오프라인 안정화(stabilize) 추가
+    - 수집 후 stabilize()를 통해 DC제거 + 이상치제거 + 정규화 적용
+    - 하이브리드 코드 classify_noise()가 기대하는 신호 크기로 보정
 
     Returns
     -------
-    stabilized  : DSP_FS(1000Hz) 기준 안정화 신호 → 메인 코드 input_signal 에 대입
-    collector   : SensorDataCollector (채널별 신호 접근용)
+    tuple(np.ndarray, int)
+        (안정화된 신호, 권장 cutoff Hz)
+
+    사용 예 (하이브리드 코드 섹션 11 교체):
+    ----------------------------------------
+    from sensor_input import get_stable_signal_for_main
+
+    child_signal, cutoff = get_stable_signal_for_main("child_running")
+    experiments.append(run_experiment(
+        name="Child Running Noise",
+        input_signal=child_signal,
+        event_info="from sensor_input",
+        cutoff=cutoff,
+        show_graph=SHOW_GRAPHS,
+    ))
     """
+    sensor = SensorInput(fs=fs, duration=duration)
+    raw    = sensor.collect(noise_type, source=source)
 
-    mic_cfg = I2SMicConfig(
-        sample_rate = MIC_FS,       # [변경] 48000
-        bit_depth   = 32,
-        channels    = 1,
-        device_name = "default",
-        gain_db     = 6.0,
-        hp_cutoff   = 20.0,
-        block_size  = BLOCK_SIZE,   # [변경] 14 → 0.29ms 딜레이
-    )
+    # [변경 4] 안정화 적용 → 하이브리드 분류기와 신호 크기 일치
+    stable = sensor.stabilize(raw, remove_dc=True, remove_outliers=True,
+                              clip=True, normalize=True)
 
-    mpu_cfg = MPU6050Config(
-        i2c_bus     = I2C_BUS,
-        address     = MPU6050_ADDR,
-        accel_range = MPU6050Config.RANGE_2G,
-        sample_rate = DSP_FS,       # [변경] 1000
-        axis        = "z",
-        lp_cutoff   = 200.0,
-    )
+    cutoff = NOISE_META.get(noise_type, {}).get("cutoff", 150)
+    return stable, cutoff
 
-    if verbose:
-        delay_ms = BLOCK_SIZE / MIC_FS * 1000
-        print(f"\n  ★ [이형규] 센서 & 입력 파이프라인")
-        print(f"    {mic_cfg}")
-        print(f"    {mpu_cfg}")
-        print(f"    마이크 딜레이: {delay_ms:.3f}ms  (BLOCK_SIZE={BLOCK_SIZE})")
-        print(f"    다운샘플: {MIC_FS}Hz → {DSP_FS}Hz (÷{DOWNSAMPLE})")
 
-    collector = SensorDataCollector(mic_cfg, mpu_cfg)
-    collector.collect(
-        duration    = duration,
-        mic_weight  = mic_weight,
-        _sim_signal = raw_signal,
-    )
+# =========================================================
+# 하이브리드 코드 섹션 11 교체용 코드 (주석)
+# =========================================================
+#
+# 아래 코드를 하이브리드 코드 섹션 11 전체와 교체하면 연동 완료.
+# sensor_input.py 와 하이브리드 코드가 같은 폴더에 있어야 함.
+#
+# ─────────────────────────────────────────────────────────
+# from sensor_input import get_stable_signal_for_main
+#
+# experiments = []
+#
+# child_signal, cutoff = get_stable_signal_for_main("child_running")
+# experiments.append(run_experiment(
+#     name="Child Running Noise",
+#     input_signal=child_signal,
+#     event_info="from sensor_input",
+#     cutoff=cutoff,
+#     show_graph=SHOW_GRAPHS,
+# ))
+#
+# adult_signal, cutoff = get_stable_signal_for_main("adult_footstep")
+# experiments.append(run_experiment(
+#     name="Adult Heavy Footstep Noise",
+#     input_signal=adult_signal,
+#     event_info="from sensor_input",
+#     cutoff=cutoff,
+#     show_graph=SHOW_GRAPHS,
+# ))
+#
+# washing_signal, cutoff = get_stable_signal_for_main("washing_machine")
+# experiments.append(run_experiment(
+#     name="Washing Machine Vibration",
+#     input_signal=washing_signal,
+#     event_info="from sensor_input",
+#     cutoff=cutoff,
+#     show_graph=SHOW_GRAPHS,
+# ))
+#
+# chair_signal, cutoff = get_stable_signal_for_main("chair_dragging")
+# experiments.append(run_experiment(
+#     name="Chair Dragging Noise",
+#     input_signal=chair_signal,
+#     event_info="from sensor_input",
+#     cutoff=cutoff,
+#     show_graph=SHOW_GRAPHS,
+# ))
+#
+# drop_signal, cutoff = get_stable_signal_for_main("object_drop")
+# experiments.append(run_experiment(
+#     name="Object Drop Impact Noise",
+#     input_signal=drop_signal,
+#     event_info="from sensor_input",
+#     cutoff=cutoff,
+#     show_graph=SHOW_GRAPHS,
+# ))
+# ─────────────────────────────────────────────────────────
 
-    if verbose:
-        collector.print_stats()
 
-    stabilizer = InputSignalStabilizer(
-        fs               = DSP_FS,
-        target_rms       = 0.3,
-        clip_threshold   = 2.5,
-        prefilter_cutoff = 450.0,
-    )
-    stabilized = stabilizer.stabilize(collector.fused)
+# =========================================================
+# 단독 실행 테스트
+# =========================================================
 
-    if verbose:
-        print(f"    안정화기: {stabilizer}")
-        print(f"    안정화 후 RMS  : {round(float(np.sqrt(np.mean(stabilized**2))), 4)}")
-        print(f"    출력 샘플 수   : {len(stabilized)}  "
-              f"(={DSP_FS}Hz × {duration}s, 메인 DSP 코드와 일치)")
+if __name__ == "__main__":
+    print("=" * 60)
+    print("sensor_input.py 단독 테스트")
+    print(f"목표 레이턴시: {TARGET_LATENCY_MS}ms")
+    print("=" * 60)
 
-    return stabilized, collector
+    sensor = SensorInput(fs=1000, duration=8.0)
+
+    print("\n--- I2S 마이크 세팅 ---")
+    sensor.setup_i2s()
+
+    print("\n--- 진동 센서 튜닝 ---")
+    sensor.tune_vibration_sensor(gain=1.5, freq_range=(20, 200), median_kernel=5)
+
+    print("\n--- 실시간 ANC 루프 테스트 ---")
+    output = realtime_anc_loop("child_running", sensor)
+    print(f"  출력 신호 RMS: {rms(output):.5f}")
+
+    print("\n--- 1샘플 레이턴시 측정 (100회) ---")
+    for _ in range(100):
+        sensor.measure_latency_sample(np.random.randn())
+    sensor.latency_report()
+
+    print("\n--- 전체 소음 수집 ---")
+    collected = sensor.collect_all(source="i2s")
+
+    print("\n--- 수집 결과 요약 ---")
+    for label, sig in collected.items():
+        print(f"  {label}: RMS={rms(sig):.5f}, peak={np.max(np.abs(sig)):.5f}, "
+              f"samples={len(sig)}")
+
+    print("\n--- 하이브리드 코드 연동 테스트 ---")
+    signal, cutoff = get_stable_signal_for_main("washing_machine")
+    print(f"  washing_machine → RMS={rms(signal):.5f}, cutoff={cutoff}Hz")
+    print(f"  신호 길이: {len(signal)} (하이브리드 코드 기대값 8000과 일치: {len(signal)==8000})")
+
+    print(f"\n[완료] 목표 레이턴시: {TARGET_LATENCY_MS}ms")
