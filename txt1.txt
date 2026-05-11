@@ -1,5 +1,3 @@
-
-oisezero@noisezero:~/noise_zero $ sudo python3 main.py
 ALSA lib pcm_asym.c:105:(_snd_pcm_asym_open) capture slave is not defined
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.front
 ALSA lib pcm.c:2722:(snd_pcm_open_noupdate) Unknown PCM cards.pcm.rear
@@ -27,18 +25,8 @@ Cannot connect to server request channel
 jack server is not running or cannot be started
 JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
 JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
+마이크 장치를 여는 중...
 Expression 'parameters->channelCount <= maxChans' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1514
 Expression 'ValidateParameters( inputParameters, hostApi, StreamDirection_In )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2818
-Traceback (most recent call last):
-  File "/home/noisezero/noise_zero/main.py", line 13, in <module>
-    stream = p.open(format=FORMAT,
-                    channels=CHANNELS,
-    ...<2 lines>...
-    		input_device_index=3,
-                    frames_per_buffer=CHUNK)
-  File "/usr/lib/python3/dist-packages/pyaudio/__init__.py", line 639, in open
-    stream = PyAudio.Stream(self, *args, **kwargs)
-  File "/usr/lib/python3/dist-packages/pyaudio/__init__.py", line 441, in __init__
-    self._stream = pa.open(**arguments)
-                   ~~~~~~~^^^^^^^^^^^^^
-OSError: [Errno -9998] Invalid number of channels
+
+에러 발생: [Errno -9998] Invalid number of channels
