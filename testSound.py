@@ -1,5 +1,3 @@
-import numpy as np
-import wave
 import RPi.GPIO as GPIO
 import busio
 import board
@@ -20,72 +18,50 @@ GPIO.setup(13, GPIO.OUT)
 pwm = GPIO.PWM(13, 440)
 pwm.start(0)
 
-# ====================== [3. wav 파일 로드] ======================
-SOUND_PATH = "/home/noisezero/noise_zero/piano/"
-
-full_notes = [
-    "AS1", "B1", "C2", "CS2", "D2", "DS2", "E2", "F2", "FS2", "G2", "GS2", "A2",
-    "AS2", "B2", "C3", "CS3", "D3", "DS3", "E3", "F3", "FS3", "G3", "GS3", "A3",
-    "AS3", "B3", "C4", "CS4", "D4", "DS4", "E4", "F4", "FS4", "G4", "GS4", "A4",
-    "AS4", "B4", "C5", "CS5", "D5", "DS5"
+# ====================== [3. 음계 주파수 설정] ======================
+# 4옥타브 기준 전체 음계
+all_notes = [
+    ("AS1", 58),  ("B1", 62),   ("C2", 65),  ("CS2", 69),
+    ("D2", 73),   ("DS2", 78),  ("E2", 82),  ("F2", 87),
+    ("FS2", 93),  ("G2", 98),   ("GS2", 104),("A2", 110),
+    ("AS2", 117), ("B2", 123),  ("C3", 131), ("CS3", 139),
+    ("D3", 147),  ("DS3", 156), ("E3", 165), ("F3", 175),
+    ("FS3", 185), ("G3", 196),  ("GS3", 208),("A3", 220),
+    ("AS3", 233), ("B3", 247),  ("C4", 262), ("CS4", 277),
+    ("D4", 294),  ("DS4", 311), ("E4", 330), ("F4", 349),
+    ("FS4", 370), ("G4", 392),  ("GS4", 415),("A4", 440),
+    ("AS4", 466), ("B4", 494),  ("C5", 523), ("CS5", 554),
+    ("D5", 587),  ("DS5", 622)
 ]
 
-piano_sounds = {}
-for name in full_notes:
-    path = SOUND_PATH + name + ".wav"
-    if os.path.exists(path):
-        with wave.open(path, 'r') as f:
-            framerate = f.getframerate()
-            frames = f.readframes(f.getnframes())
-            data = np.frombuffer(frames, dtype=np.int16)
-        piano_sounds[name] = (data, framerate)
-        print(f"Loaded: {name}")
-    else:
-        print(f"Warning: {path} not found.")
-
 # ====================== [4. 변수] ======================
-base_index = 2
-volume = 0.75
+base_index = 26  # 기본 C4부터 시작
+volume = 50      # 듀티사이클 (0~100)
 loop_state = "IDLE"
 loop_data = []
 is_looping = False
 loop_start_time = 0
 last_touch_time = 0
-is_playing = False
 
 # ====================== [5. 함수] ======================
-def play_wav(data, framerate):
-    global is_playing
-    is_playing = True
-    for sample in data[::100]:
-        if not is_playing:
-            break
-        freq = abs(int(sample)) + 1
-        if freq > 20:
-            pwm.ChangeFrequency(min(freq, 4000))
-            pwm.ChangeDutyCycle(50)
-        time.sleep(1/framerate * 100)
-    pwm.ChangeDutyCycle(0)
-    is_playing = False
-
 def play_note(pad_idx, record=True):
-    global loop_data, loop_start_time, is_playing
+    global loop_data, loop_start_time
     target_idx = base_index + pad_idx
-    if target_idx < len(full_notes):
-        name = full_notes[target_idx]
-        if name in piano_sounds:
-            print(f"Playing: {name}")
-            is_playing = False
-            time.sleep(0.01)
-            data, framerate = piano_sounds[name]
-            threading.Thread(target=play_wav, args=(data, framerate), daemon=True).start()
-            if loop_state == "RECORDING" and record:
-                loop_data.append((time.time() - loop_start_time, target_idx))
+    if target_idx < len(all_notes):
+        name, freq = all_notes[target_idx]
+        print(f"Playing: {name} ({freq}Hz)")
+        pwm.ChangeFrequency(freq)
+        pwm.ChangeDutyCycle(volume)
+        if loop_state == "RECORDING" and record:
+            loop_data.append((time.time() - loop_start_time, target_idx))
+
+def stop_note():
+    pwm.ChangeDutyCycle(0)
 
 def adjust_volume(delta):
     global volume
-    volume = max(0.1, min(1.0, volume + delta))
-    print(f"Volume: {int(volume*100)}%")
+    volume = max(10, min(100, volume + delta))
+    print(f"Volume: {volume}%")
 
 def handle_loop_logic():
     global loop_state, last_touch_time, loop_data, loop_start_time, is_looping
@@ -124,20 +100,18 @@ def loop_player():
                 if not is_looping:
                     return
                 time.sleep(0.005)
-            name = full_notes[idx]
-            if name in piano_sounds:
-                data, framerate = piano_sounds[name]
-                threading.Thread(target=play_wav, args=(data, framerate), daemon=True).start()
+            name, freq = all_notes[idx]
+            pwm.ChangeFrequency(freq)
+            pwm.ChangeDutyCycle(volume)
         time.sleep(0.05)
 
 # ====================== [6. 메인 루프] ======================
-import os
 print("=== Launchpad 시작 ===")
 
 try:
     while True:
         if mpr_ctrl[0].value:
-            base_index = min(len(full_notes)-12, base_index + 12)
+            base_index = min(len(all_notes)-12, base_index + 12)
             print("Oct UP")
             while mpr_ctrl[0].value: time.sleep(0.01)
 
@@ -151,11 +125,11 @@ try:
             while mpr_ctrl[2].value: time.sleep(0.01)
 
         if mpr_ctrl[3].value:
-            adjust_volume(0.05)
+            adjust_volume(5)
             while mpr_ctrl[3].value: time.sleep(0.01)
 
         if mpr_ctrl[4].value:
-            adjust_volume(-0.05)
+            adjust_volume(-5)
             while mpr_ctrl[4].value: time.sleep(0.01)
 
         for i in range(12):
@@ -163,6 +137,7 @@ try:
                 play_note(i)
                 while mpr_piano[i].value:
                     time.sleep(0.012)
+                stop_note()
 
         time.sleep(0.008)
 
