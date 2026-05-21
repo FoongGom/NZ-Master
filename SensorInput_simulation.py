@@ -721,7 +721,6 @@ end
 
 """
 
-"""
 실행 결과:
 
 >> SensorInput
