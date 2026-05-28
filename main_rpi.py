@@ -6,7 +6,7 @@ from anc_controller import ANC_Controller
 
 ESP32_IP = "172.20.10.5"
 UDP_PORT = 12345
-BUFFER_SIZE = 256
+BUFFER_SIZE = 256   # ESP32와 동일
 
 controller = ANC_Controller(fs=16000, buffer_size=BUFFER_SIZE)
 
@@ -20,21 +20,23 @@ print("=" * 60)
 
 while True:
     try:
-        data, addr = sock.recvfrom(BUFFER_SIZE * 4)
+        data, addr = sock.recvfrom(BUFFER_SIZE * 4 + 64)  # 여유 공간 추가
         
-        # ← 여기서 타입을 명확하게 int32로 변환
-        mic_samples = np.frombuffer(data, dtype=np.int32).copy()
-        mic_samples = mic_samples >> 8                    # 24bit 정렬
-        mic_samples = mic_samples.astype(np.float32)      # float32로 변환
+        # 안전하게 데이터 처리
+        if len(data) >= BUFFER_SIZE * 4:
+            mic_samples = np.frombuffer(data[:BUFFER_SIZE * 4], dtype=np.int32).copy()
+            mic_samples = (mic_samples >> 8).astype(np.float32)
 
-        result = controller.process(mic_samples)
+            result = controller.process(mic_samples)
 
-        cmd = f"GAIN:{result['gain']:.3f},DELAY:{result['delay']}"
-        sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
+            cmd = f"GAIN:{result['gain']:.3f},DELAY:{result['delay']}"
+            sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
 
-        if time.time() % 2 < 0.1:   # 2초마다 출력
-            print(f"[{result['method']:7}] {result['noise_type']:12} | "
-                  f"Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
+            if time.time() % 2 < 0.1:
+                print(f"[{result['method']:7}] {result['noise_type']:12} | "
+                      f"Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
+        else:
+            print(f"데이터 크기 부족: {len(data)} bytes")
 
     except socket.timeout:
         print("ESP32 연결 대기중...")
