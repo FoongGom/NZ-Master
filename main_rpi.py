@@ -1,44 +1,34 @@
 # main_rpi.py
 import socket
-import numpy as np
 import time
-from anc_controller import ANC_Controller
 
 ESP32_IP = "172.20.10.5"
 UDP_PORT = 12345
-BUFFER_SIZE = 256
-
-controller = ANC_Controller(fs=16000, buffer_size=BUFFER_SIZE)
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(('', UDP_PORT))
-sock.settimeout(0.5)
+sock.settimeout(1.0)
 
 print("=" * 60)
-print("ANC 시스템 시작")
+print("라즈베리파이 ANC 수신 테스트")
+print("ESP32 연결 대기중...")
 print("=" * 60)
+
+count = 0
 
 while True:
     try:
-        data, addr = sock.recvfrom(2048)  # 충분한 버퍼
+        data, addr = sock.recvfrom(2048)
+        count += 1
+        print(f"[{count}] ESP32로부터 데이터 수신! 크기: {len(data)} bytes")
         
-        if len(data) >= BUFFER_SIZE * 4:
-            mic_samples = np.frombuffer(data[:BUFFER_SIZE * 4], dtype=np.int32).copy()
-            mic_samples = (mic_samples >> 8).astype(np.float32)
-
-            result = controller.process(mic_samples)
-
-            cmd = f"GAIN:{result['gain']:.3f},DELAY:{result['delay']}"
-            sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
-
-            if time.time() % 2 < 0.1:
-                print(f"[{result['method']}] {result['noise_type']} | Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
-        else:
-            print(f"데이터 부족: {len(data)} bytes")
-
+        # 테스트로 gain 명령 보내기
+        cmd = "GAIN:0.08,DELAY:10"
+        sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
+        
     except socket.timeout:
         print("ESP32 연결 대기중...")
-        continue
     except Exception as e:
-        print(f"Error: {e}")
-        time.sleep(0.1)
+        print(f"에러: {e}")
+    
+    time.sleep(0.5)
