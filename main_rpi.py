@@ -1,38 +1,53 @@
-# real_time/main_rpi.py
+# main_rpi.py
 import socket
 import numpy as np
 import time
 from anc_controller import ANC_Controller
 
-ESP32_HOSTNAME = "anc-rpi.local"   # mDNS
+# ================== 설정 ==================
+ESP32_IP = "172.20.10.5"      # ← 라즈베리파이 현재 IP (고정)
 UDP_PORT = 12345
+BUFFER_SIZE = 256
 
-controller = ANC_Controller(fs=16000, buffer_size=256)
+# ANC Controller 초기화
+controller = ANC_Controller(fs=16000, buffer_size=BUFFER_SIZE)
 
+# UDP 소켓 설정
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(('', UDP_PORT))
 sock.settimeout(0.1)
 
-print("=== 층간소음 ANC 시스템 시작 (WiFi mDNS) ===")
+print("=" * 70)
+print("층간소음 ANC 시스템 시작 (WiFi)")
+print(f"Raspberry Pi IP: {ESP32_IP}")
+print("ESP32 연결 대기 중...")
+print("=" * 70)
+
+last_print = time.time()
 
 while True:
     try:
-        data, _ = sock.recvfrom(256 * 4)
-        mic_data = np.frombuffer(data, dtype=np.int32).astype(np.float32)
-        mic_data = mic_data >> 8
+        # ESP32로부터 마이크 데이터 수신
+        data, addr = sock.recvfrom(BUFFER_SIZE * 4)
+        
+        mic_samples = np.frombuffer(data, dtype=np.int32).astype(np.float32)
+        mic_samples = mic_samples >> 8   # 24bit 정렬
 
-        result = controller.process(mic_data)
+        # ANC 분석 및 최적 제어 방식 결정
+        result = controller.process(mic_samples)
 
-        # ESP32로 명령 전송
+        # ESP32로 제어 명령 전송
         cmd = f"GAIN:{result['gain']:.3f},DELAY:{result['delay']}"
-        sock.sendto(cmd.encode(), (ESP32_HOSTNAME, UDP_PORT))
+        sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
 
-        if int(time.time()) % 2 == 0:
-            print(f"[{result['method']:7}] {result['noise_type']:12} | "
-                  f"Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
+        # 2초마다 상태 출력
+        if time.time() - last_print > 2.0:
+            last_print = time.time()
+            print(f"[{result['method']:7}] Noise: {result['noise_type']:12} | "
+                  f"Gain: {result['gain']:.2f} | Est.Reduction: {result['estimated_db']:.1f}dB")
 
     except socket.timeout:
         continue
     except Exception as e:
-        print("Error:", e)
+        print(f"Error: {e}")
         time.sleep(0.01)
