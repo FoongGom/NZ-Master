@@ -12,28 +12,33 @@ controller = ANC_Controller(fs=16000, buffer_size=BUFFER_SIZE)
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(('', UDP_PORT))
-sock.settimeout(0.5)   # 타임아웃 늘림
+sock.settimeout(0.5)
 
 print("=" * 60)
-print("ANC 시스템 시작 - ESP32 연결 대기")
+print("ANC 시스템 시작")
 print("=" * 60)
 
 while True:
     try:
         data, addr = sock.recvfrom(BUFFER_SIZE * 4)
-        mic_samples = np.frombuffer(data, dtype=np.int32).astype(np.float32)
-        mic_samples = mic_samples >> 8
+        
+        # ← 여기서 타입을 명확하게 int32로 변환
+        mic_samples = np.frombuffer(data, dtype=np.int32).copy()
+        mic_samples = mic_samples >> 8                    # 24bit 정렬
+        mic_samples = mic_samples.astype(np.float32)      # float32로 변환
 
         result = controller.process(mic_samples)
 
         cmd = f"GAIN:{result['gain']:.3f},DELAY:{result['delay']}"
         sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
 
-        print(f"[{result['method']}] Noise:{result['noise_type']} | Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
+        if time.time() % 2 < 0.1:   # 2초마다 출력
+            print(f"[{result['method']:7}] {result['noise_type']:12} | "
+                  f"Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
 
     except socket.timeout:
         print("ESP32 연결 대기중...")
         continue
     except Exception as e:
-        print("Error:", e)
+        print(f"Error: {e}")
         time.sleep(0.1)
