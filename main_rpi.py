@@ -20,7 +20,7 @@ print("=" * 60)
 
 while True:
     try:
-        data, addr = sock.recvfrom(2048)   # 여유 공간 크게 줌
+        data, addr = sock.recvfrom(2048)  # 충분한 버퍼
         
         if len(data) >= BUFFER_SIZE * 4:
             mic_samples = np.frombuffer(data[:BUFFER_SIZE * 4], dtype=np.int32).copy()
@@ -32,8 +32,7 @@ while True:
             sock.sendto(cmd.encode(), (ESP32_IP, UDP_PORT))
 
             if time.time() % 2 < 0.1:
-                print(f"[{result['method']:7}] {result['noise_type']:12} | "
-                      f"Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
+                print(f"[{result['method']}] {result['noise_type']} | Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
         else:
             print(f"데이터 부족: {len(data)} bytes")
 
