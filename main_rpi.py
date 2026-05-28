@@ -6,7 +6,7 @@ from anc_controller import ANC_Controller
 
 ESP32_IP = "172.20.10.5"
 UDP_PORT = 12345
-BUFFER_SIZE = 256   # ESP32와 동일
+BUFFER_SIZE = 256
 
 controller = ANC_Controller(fs=16000, buffer_size=BUFFER_SIZE)
 
@@ -20,9 +20,8 @@ print("=" * 60)
 
 while True:
     try:
-        data, addr = sock.recvfrom(BUFFER_SIZE * 4 + 64)  # 여유 공간 추가
+        data, addr = sock.recvfrom(2048)   # 여유 공간 크게 줌
         
-        # 안전하게 데이터 처리
         if len(data) >= BUFFER_SIZE * 4:
             mic_samples = np.frombuffer(data[:BUFFER_SIZE * 4], dtype=np.int32).copy()
             mic_samples = (mic_samples >> 8).astype(np.float32)
@@ -36,7 +35,7 @@ while True:
                 print(f"[{result['method']:7}] {result['noise_type']:12} | "
                       f"Gain:{result['gain']:.2f} | Reduction:{result['estimated_db']:.1f}dB")
         else:
-            print(f"데이터 크기 부족: {len(data)} bytes")
+            print(f"데이터 부족: {len(data)} bytes")
 
     except socket.timeout:
         print("ESP32 연결 대기중...")
