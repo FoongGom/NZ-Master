@@ -1,4 +1,3 @@
-# NZ-Master
 # NZ-Master - NoiseZero DSP Simulation
 
 ## 하이브리드 층간소음 제어 시뮬레이션
