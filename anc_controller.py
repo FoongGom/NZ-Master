@@ -9,12 +9,11 @@ class ANC_Controller:
         self.fs = fs
         self.buffer_size = buffer_size
         self.recent_buffer = deque(maxlen=buffer_size * 8)
-
-        self.gain = 0.52          # 안전하게 시작
-        self.delay_samples = 12
-        self.feedback_suppression = 0.70
-        self.w = np.zeros(48)
-        self.mu = 0.0025
+        self.gain = 0.8
+        self.delay_samples = 8
+        self.feedback_suppression = 0.7
+        self.w = np.zeros(64)
+        self.mu = 0.01
 
     def lowpass(self, signal, cutoff=160):
         b, a = butter(4, cutoff / (self.fs / 2), btype="low")
@@ -24,11 +23,10 @@ class ANC_Controller:
         signal = np.array(signal, dtype=np.float32)
         rms_val = np.sqrt(np.mean(signal**2) + 1e-12)
         peak_to_rms = np.max(np.abs(signal)) / (rms_val + 1e-9)
-
         spectrum = np.abs(rfft(signal))
         dominant_freq = np.argmax(spectrum[:len(spectrum)//5]) * self.fs / len(signal)
 
-        if peak_to_rms > 7.5:
+        if peak_to_rms > 4.0:
             return "impact"
         elif 40 < dominant_freq < 250:
             return "continuous"
@@ -38,7 +36,6 @@ class ANC_Controller:
     def process(self, raw_data):
         self.recent_buffer.extend(raw_data)
         signal = np.array(raw_data, dtype=np.float32)
-
         noise_type = self.classify_noise(signal)
         filtered = self.lowpass(signal)
 
@@ -67,7 +64,8 @@ class ANC_Controller:
         control = np.zeros_like(signal)
         for n in range(len(self.w), len(signal)):
             x = signal[n:n-len(self.w):-1]
-            if len(x) != len(self.w): continue
+            if len(x) != len(self.w):
+                continue
             y = -np.dot(self.w, x)
             control[n] = y
             error = signal[n] + y
