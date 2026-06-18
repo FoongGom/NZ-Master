@@ -15,7 +15,9 @@ cd ~/linux
 patch -p1 < ~/patch-6.6.78-rt52-rc1.patch
 
 
-
+cd ~/linux
+KERNEL=kernel8
+make bcm2711_defconfig
 
 
 
