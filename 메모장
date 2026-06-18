@@ -1,5 +1,2 @@
 cd ~
 wget https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/6.6/patch-6.6.78-rt45.patch.gz
-gunzip patch-6.6.78-rt45.patch.gz
-cd ~/linux
-patch -p1 < ../patch-6.6.78-rt45.patch
