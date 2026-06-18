@@ -1,4 +1,14 @@
-/boot/initrd.img-6.12.75+rpt-rpi-2712
-/boot/initrd.img-6.12.75+rpt-rpi-v8
-/boot/initrd.img-6.12.90+deb13.1-rt-arm64
-/boot/initrd.img-6.6.78-rt52-rc1-v8+
+import sounddevice as sd
+import numpy as np
+
+stream = sd.Stream(device=(1, 1),
+                   samplerate=48000,
+                   blocksize=64,
+                   dtype='float32',
+                   channels=2,
+                   latency='low')
+stream.start()
+print(f"입력 레이턴시: {stream.latency[0]*1000:.2f}ms")
+print(f"출력 레이턴시: {stream.latency[1]*1000:.2f}ms")
+stream.stop()
+stream.close()
