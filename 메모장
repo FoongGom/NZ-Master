@@ -1,2 +1,3 @@
 cd ~
-wget https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/6.6/older/patch-6.6.78-rt45.patch.gz
+wget https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/6.6/patch-6.6.78-rt52-rc1.patch.gz
+gunzip patch-6.6.78-rt52-rc1.patch.gz
