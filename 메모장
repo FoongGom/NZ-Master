@@ -1,21 +1,3 @@
-oisezero@noisezero:~ $ aplay -l
-**** PLAYBACK 하드웨어 장치 목록 ****
-카드 0: Headphones [bcm2835 Headphones], 장치 0: bcm2835 Headphones [bcm2835 Headphones]
-  주변장치: 8/8
-  주변장치 #0: subdevice #0
-  주변장치 #1: subdevice #1
-  주변장치 #2: subdevice #2
-  주변장치 #3: subdevice #3
-  주변장치 #4: subdevice #4
-  주변장치 #5: subdevice #5
-  주변장치 #6: subdevice #6
-  주변장치 #7: subdevice #7
-카드 1: sndrpigooglevoi [snd_rpi_googlevoicehat_soundcar], 장치 0: Google voiceHAT SoundCard HiFi voicehat-hifi-0 [Google voiceHAT SoundCard HiFi voicehat-hifi-0]
-  주변장치: 1/1
-  주변장치 #0: subdevice #0
-카드 2: vc4hdmi0 [vc4-hdmi-0], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
-  주변장치: 1/1
-  주변장치 #0: subdevice #0
-카드 3: vc4hdmi1 [vc4-hdmi-1], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
-  주변장치: 1/1
-  주변장치 #0: subdevice #0
+arecord: set_params:1387: 사용할 수 없는 샘플 형식
+Available formats:
+- S32_LE
