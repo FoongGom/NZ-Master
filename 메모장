@@ -5,12 +5,11 @@ client = jack.Client('ANC')
 inport  = client.inports.register('input_1')
 outport = client.outports.register('output_1')
 
-# LMS 설정
 LMS_ORDER = 16
-MU        = 0.01
+MU        = 0.01f
+GAIN      = 15.0
 w         = np.zeros(LMS_ORDER, dtype=np.float32)
 buf       = np.zeros(LMS_ORDER, dtype=np.float32)
-GAIN      = 10.0
 
 @client.set_process_callback
 def process(frames):
@@ -19,25 +18,17 @@ def process(frames):
     out  = np.zeros(len(data), dtype=np.float32)
 
     for i in range(len(data)):
-        # 버퍼 갱신
         buf = np.roll(buf, 1)
         buf[0] = data[i]
-
-        # LMS 출력
-        y = np.dot(w, buf)
-
-        # 상쇄음 = 반전
+        y      = float(np.dot(w, buf))
         out[i] = -y
+        e      = data[i] - y
+        w     += (2.0 * MU * e) * buf
 
-        # 오차 계산 및 계수 갱신
-        e = data[i] - y
-        w += 2.0 * MU * e * buf
-
-    out = np.clip(out * GAIN, -1.0, 1.0)
-    outport.get_buffer()[:] = out.tobytes()
+    outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
 
 with client:
     client.connect('system:capture_1', 'ANC:input_1')
     client.connect('ANC:output_1', 'system:playback_1')
-    print("LMS ANC 시작 - Ctrl+C 로 종료")
+    print("LMS ANC 시작")
     input()
