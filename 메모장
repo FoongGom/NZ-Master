@@ -11,7 +11,8 @@ cd ~
 gunzip patch-6.6.78-rt52-rc1.patch.gz
 ls *.patch
 
-
+cd ~/linux
+patch -p1 < ~/patch-6.6.78-rt52-rc1.patch
 
 
 
