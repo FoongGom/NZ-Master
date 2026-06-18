@@ -1,3 +1,1 @@
-cd ~
-rm -rf linux
-git clone --depth=1 --branch v6.6.31 https://github.com/raspberrypi/linux
+curl -s https://api.github.com/repos/raspberrypi/linux/branches | grep '"name"' | grep 6.6
