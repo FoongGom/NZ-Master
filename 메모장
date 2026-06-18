@@ -13,6 +13,10 @@ def process(frames):
     outport.get_buffer()[:] = anti.tobytes()
 
 with client:
+    # 물리적 포트 연결
+    client.connect('system:capture_1', 'ANC:input_1')
+    client.connect('ANC:output_1', 'system:playback_1')
+    
     ms = client.blocksize / client.samplerate * 1000
     print("레이턴시:", ms, "ms")
     print("ANC 시작 - Ctrl+C 로 종료")
