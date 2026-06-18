@@ -1,31 +1,13 @@
-cd ~
-wget https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/6.6/patch-6.6.78-rt52-rc1.patch.gz
-gunzip patch-6.6.78-rt52-rc1.patch.gz
-cd ~/linux
-patch -p1 < ../patch-6.6.78-rt52-rc1.patch
+  INSTALL /boot
+run-parts: executing /etc/kernel/postinst.d/initramfs-tools 6.6.78-rt52-rc1-v8+ /boot/vmlinux-6.6.78-rt52-rc1-v8+
+update-initramfs: Generating /boot/initrd.img-6.6.78-rt52-rc1-v8+
+mkinitramfs: failed to determine device for /
+mkinitramfs: workaround is MODULES=most, check:
+grep -r MODULES /etc/initramfs-tools
 
-cd ~
-wget https://www.kernel.org/pub/linux/kernel/projects/rt/6.6/patch-6.6.78-rt52-rc1.patch.gz
-
-cd ~
-gunzip patch-6.6.78-rt52-rc1.patch.gz
-ls *.patch
-
-cd ~/linux
-patch -p1 < ~/patch-6.6.78-rt52-rc1.patch
-
-
-cd ~/linux
-KERNEL=kernel8
-make bcm2711_defconfig
-
-
-
-
-
-
-
-
-
-
-
+Error please report bug on initramfs-tools
+Include the output of 'mount' and 'cat /proc/mounts'
+update-initramfs: failed for /boot/initrd.img-6.6.78-rt52-rc1-v8+ with 1.
+run-parts: /etc/kernel/postinst.d/initramfs-tools exited with return code 1
+make[1]: *** [arch/arm64/Makefile:170: install] 오류 1
+make: *** [Makefile:234: __sub-make] 오류 2
