@@ -1,28 +1,25 @@
-import sounddevice as sd
-import numpy as np
-
-SAMPLE_RATE = 48000
-BLOCK_SIZE  = 64
-GAIN        = 5.0
-
-def callback(indata, outdata, frames, time, status):
-    if status:
-        print(status)
-    outdata[:] = np.clip(-indata * GAIN, -1.0, 1.0)
-
-stream = sd.Stream(device='jack',
-                   samplerate=SAMPLE_RATE,
-                   blocksize=BLOCK_SIZE,
-                   dtype='float32',
-                   channels=2,
-                   callback=callback)
-
-stream.start()
-print(f"입력 레이턴시: {stream.latency[0]*1000:.2f}ms")
-print(f"출력 레이턴시: {stream.latency[1]*1000:.2f}ms")
-print(f"왕복 레이턴시: {(stream.latency[0]+stream.latency[1])*1000:.2f}ms")
-print("ANC 시작 - Ctrl+C 로 종료")
-
-sd.sleep(30000)
-stream.stop()
-stream.close()
+Traceback (most recent call last):
+  File "/home/noisezero/test.py", line 13, in <module>
+    stream = sd.Stream(device='jack',
+                       samplerate=SAMPLE_RATE,
+    ...<2 lines>...
+                       channels=2,
+                       callback=callback)
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 1842, in __init__
+    _StreamBase.__init__(self, kind='duplex', wrap_callback='array',
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         **_remove_self(locals()))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 816, in __init__
+    iparameters, idtype, isize, isamplerate = _get_stream_parameters(
+                                              ~~~~~~~~~~~~~~~~~~~~~~^
+        'input', idevice, ichannels, idtype, ilatency, iextra,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        samplerate)
+        ^^^^^^^^^^^
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 2734, in _get_stream_parameters
+    device = _get_device_id(device, kind, raise_on_error=True)
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 2900, in _get_device_id
+    raise ValueError(
+        'No ' + kind + ' device matching ' + repr(id_or_query_string))
+ValueError: No input device matching 'jack'
