@@ -1,3 +1,3 @@
-arecord: set_params:1387: 사용할 수 없는 샘플 형식
-Available formats:
-- S32_LE
+arecord -D hw:1,0 -f S32_LE -r 48000 -c 2 -d 5 test_raw.wav
+sox -r 48000 -e signed -b 32 -c 2 test_raw.wav -r 48000 -e signed -b 16 -c 2 test16.wav
+aplay -D hw:1,0 test16.wav
