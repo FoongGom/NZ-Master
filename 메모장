@@ -1,7 +1,21 @@
-noisezero@noisezero:~ $ sudo dpkg --list | grep linux-image
-ii  linux-image-6.12.75+rpt-rpi-2712       1:6.12.75-1+rpt1                     arm64        Linux 6.12 for Raspberry Pi 2712, Raspberry Pi
-ii  linux-image-6.12.75+rpt-rpi-v8         1:6.12.75-1+rpt1                     arm64        Linux 6.12 for Raspberry Pi v8, Raspberry Pi
-ii  linux-image-6.12.90+deb13.1-rt-arm64   6.12.90-2                            arm64        Linux 6.12 for 64-bit ARMv8 machines (signed), PREEMPT_RT
-ii  linux-image-rpi-2712                   1:6.12.75-1+rpt1                     arm64        Linux for Raspberry Pi 2712 (meta-package)
-ii  linux-image-rpi-v8                     1:6.12.75-1+rpt1                     arm64        Linux for Raspberry Pi v8 (meta-package)
-ii  linux-image-rt-arm64                   6.12.90-2                            arm64        Linux for 64-bit ARMv8 machines (meta-package)
+oisezero@noisezero:~ $ aplay -l
+**** PLAYBACK 하드웨어 장치 목록 ****
+카드 0: Headphones [bcm2835 Headphones], 장치 0: bcm2835 Headphones [bcm2835 Headphones]
+  주변장치: 8/8
+  주변장치 #0: subdevice #0
+  주변장치 #1: subdevice #1
+  주변장치 #2: subdevice #2
+  주변장치 #3: subdevice #3
+  주변장치 #4: subdevice #4
+  주변장치 #5: subdevice #5
+  주변장치 #6: subdevice #6
+  주변장치 #7: subdevice #7
+카드 1: sndrpigooglevoi [snd_rpi_googlevoicehat_soundcar], 장치 0: Google voiceHAT SoundCard HiFi voicehat-hifi-0 [Google voiceHAT SoundCard HiFi voicehat-hifi-0]
+  주변장치: 1/1
+  주변장치 #0: subdevice #0
+카드 2: vc4hdmi0 [vc4-hdmi-0], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
+  주변장치: 1/1
+  주변장치 #0: subdevice #0
+카드 3: vc4hdmi1 [vc4-hdmi-1], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
+  주변장치: 1/1
+  주변장치 #0: subdevice #0
