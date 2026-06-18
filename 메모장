@@ -3,14 +3,21 @@ import numpy as np
 
 SAMPLE_RATE = 48000
 BLOCK_SIZE  = 512
-GAIN        = 20.0  # 8 → 20으로 올림
 DEVICE      = 1
 
 def callback(indata, outdata, frames, time, status):
     if status:
         print(status)
-    # 위상 반전 (ANC)
-    outdata[:] = np.clip(indata * GAIN * -1.0, -1.0, 1.0)
+    
+    # 입력 신호 크기 측정
+    input_level = np.max(np.abs(indata))
+    
+    # 입력이 있을 때만 출력 (게인 자동 조절)
+    if input_level > 0.001:
+        # 입력과 같은 크기로 반전 출력
+        outdata[:] = -indata
+    else:
+        outdata[:] = 0
 
 print("ANC 시작 - Ctrl+C 로 종료")
 with sd.Stream(device=(DEVICE, DEVICE),
