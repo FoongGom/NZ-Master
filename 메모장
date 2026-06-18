@@ -1,2 +1,3 @@
 cd ~
-wget https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/6.6/patch-6.6.78-rt45.patch.gz
+rm -rf linux
+git clone --depth=1 --branch v6.6.31 https://github.com/raspberrypi/linux
