@@ -1,6 +1,16 @@
-  0 bcm2835 Headphones: - (hw:0,0), ALSA (0 in, 8 out)
-  1 snd_rpi_googlevoicehat_soundcar: Google voiceHAT SoundCard HiFi voicehat-hifi-0 (hw:1,0), ALSA (2 in, 2 out)
-  2 vc4-hdmi-0: MAI PCM i2s-hifi-0 (hw:2,0), ALSA (0 in, 2 out)
-  3 sysdefault, ALSA (0 in, 128 out)
-  4 dmix, ALSA (0 in, 2 out)
-* 5 default, ALSA (2 in, 2 out)
+import jack
+import numpy as np
+
+client = jack.Client('ANC')
+inport  = client.inports.register('input_1')
+outport = client.outports.register('output_1')
+
+@client.set_process_callback
+def process(frames):
+    data = inport.get_array()
+    outport.get_buffer()[:] = (-data * 5.0).clip(-1.0, 1.0).tobytes()
+
+with client:
+    print(f"레이턴시: {client.blocksize / client.samplerate * 1000:.2f}ms")
+    print("ANC 시작 - Ctrl+C 로 종료")
+    input()
