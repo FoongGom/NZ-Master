@@ -1,1 +1,1 @@
-curl -s https://api.github.com/repos/raspberrypi/linux/branches | grep '"name"' | grep 6.6
+curl -s "https://api.github.com/repos/raspberrypi/linux/branches?per_page=100" | grep name
