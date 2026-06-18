@@ -2,15 +2,18 @@ import jack
 import numpy as np
 
 client = jack.Client('ANC')
-inport  = client.inports.register('input_1')
+inport = client.inports.register('input_1')
 outport = client.outports.register('output_1')
 
 @client.set_process_callback
 def process(frames):
     data = inport.get_array()
-    outport.get_buffer()[:] = (-data * 5.0).clip(-1.0, 1.0).tobytes()
+    anti = -data * 5.0
+    anti = np.clip(anti, -1.0, 1.0)
+    outport.get_buffer()[:] = anti.tobytes()
 
 with client:
-    print(f"레이턴시: {client.blocksize / client.samplerate * 1000:.2f}ms")
+    ms = client.blocksize / client.samplerate * 1000
+    print("레이턴시:", ms, "ms")
     print("ANC 시작 - Ctrl+C 로 종료")
     input()
