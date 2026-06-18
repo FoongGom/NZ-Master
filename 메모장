@@ -1,9 +1,22 @@
-루프백 시작 - Ctrl+C 로 종료
-^CTraceback (most recent call last):
-  File "/home/noisezero/test.py", line 21, in <module>
+import sounddevice as sd
+import numpy as np
+
+SAMPLE_RATE = 48000
+BLOCK_SIZE  = 512
+GAIN        = 20.0  # 8 → 20으로 올림
+DEVICE      = 1
+
+def callback(indata, outdata, frames, time, status):
+    if status:
+        print(status)
+    # 위상 반전 (ANC)
+    outdata[:] = np.clip(indata * GAIN * -1.0, -1.0, 1.0)
+
+print("ANC 시작 - Ctrl+C 로 종료")
+with sd.Stream(device=(DEVICE, DEVICE),
+               samplerate=SAMPLE_RATE,
+               blocksize=BLOCK_SIZE,
+               dtype='float32',
+               channels=2,
+               callback=callback):
     sd.sleep(30000)
-    ~~~~~~~~^^^^^^^
-  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 717, in sleep
-    _lib.Pa_Sleep(msec)
-    ~~~~~~~~~~~~~^^^^^^
-KeyboardInterrupt
