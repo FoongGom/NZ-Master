@@ -1,7 +1,21 @@
-장치 목록:
-  0 bcm2835 Headphones: - (hw:0,0), ALSA (0 in, 8 out)
-> 1 snd_rpi_googlevoicehat_soundcar: Google voiceHAT SoundCard HiFi voicehat-hifi-0 (hw:1,0), ALSA (2 in, 2 out)
-  2 vc4-hdmi-0: MAI PCM i2s-hifi-0 (hw:2,0), ALSA (0 in, 2 out)
-  3 sysdefault, ALSA (0 in, 128 out)
-< 4 default, ALSA (0 in, 128 out)
-  5 dmix, ALSA (0 in, 2 out)
+import sounddevice as sd
+import numpy as np
+
+SAMPLE_RATE = 48000
+BLOCK_SIZE  = 512
+GAIN        = 8.0
+DEVICE      = 1
+
+def callback(indata, outdata, frames, time, status):
+    if status:
+        print(status)
+    outdata[:] = np.clip(indata * GAIN, -1.0, 1.0)
+
+print("루프백 시작 - Ctrl+C 로 종료")
+with sd.Stream(device=(DEVICE, DEVICE),
+               samplerate=SAMPLE_RATE,
+               blocksize=BLOCK_SIZE,
+               dtype='float32',
+               channels=2,
+               callback=callback):
+    sd.sleep(30000)
