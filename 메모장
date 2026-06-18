@@ -1,3 +1,15 @@
-arecord -D hw:1,0 -f S32_LE -r 48000 -c 2 -d 5 test_raw.wav
-sox -r 48000 -e signed -b 32 -c 2 test_raw.wav -r 48000 -e signed -b 16 -c 2 test16.wav
-aplay -D hw:1,0 test16.wav
+import sounddevice as sd
+import numpy as np
+
+SAMPLE_RATE = 48000
+BLOCK_SIZE = 512
+GAIN = 8.0  # 볼륨 높이는 값
+
+def callback(indata, outdata, frames, time, status):
+    if status:
+        print(status)
+    # 그대로 출력 (루프백 테스트)
+    outdata[:] = np.clip(indata * GAIN, -1.0, 1.0)
+
+print("장치 목록:")
+print(sd.query_devices())
