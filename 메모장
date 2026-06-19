@@ -5,39 +5,16 @@ client = jack.Client('ANC')
 inport  = client.inports.register('input_1')
 outport = client.outports.register('output_1')
 
-LMS_ORDER = 16
-MU        = 0.01
-GAIN      = 15.0
-w         = np.zeros(LMS_ORDER, dtype=np.float32)
-buf       = np.zeros(LMS_ORDER, dtype=np.float32)
+GAIN = 15.0
 
 @client.set_process_callback
 def process(frames):
-    global w, buf
-    data = inport.get_array().astype(np.float32)
-    out  = np.zeros(len(data), dtype=np.float32)
-
-    for i in range(len(data)):
-        buf = np.roll(buf, 1)
-        buf[0] = data[i]
-        y      = float(np.dot(w, buf))
-        out[i] = -y
-        e      = data[i] - y
-        w     += (2.0 * MU * e) * buf
-
-    outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
+    data = inport.get_array()
+    out  = np.clip(-data * GAIN, -1.0, 1.0)
+    outport.get_buffer()[:] = out.tobytes()
 
 with client:
     client.connect('system:capture_1', 'ANC:input_1')
     client.connect('ANC:output_1', 'system:playback_1')
-
-    block_ms = client.blocksize / client.samplerate * 1000
-    input_latency  = client.inports[0].get_latency_range()
-    output_latency = client.outports[0].get_latency_range()
-
-    print(f"블록 크기 레이턴시: {block_ms:.2f}ms")
-    print(f"입력 레이턴시: {input_latency[0]/client.samplerate*1000:.2f}ms ~ {input_latency[1]/client.samplerate*1000:.2f}ms")
-    print(f"출력 레이턴시: {output_latency[0]/client.samplerate*1000:.2f}ms ~ {output_latency[1]/client.samplerate*1000:.2f}ms")
-    print(f"왕복 레이턴시 (추정): {block_ms*2*2:.2f}ms")
-    print("LMS ANC 시작 - Ctrl+C 로 종료")
+    print("ANC 시작 - Ctrl+C 로 종료")
     input()
