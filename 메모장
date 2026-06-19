@@ -1,6 +1,5 @@
 import jack
 import numpy as np
-import time
 
 client = jack.Client('ANC')
 inport  = client.inports.register('input_1')
@@ -8,7 +7,6 @@ outport = client.outports.register('output_1')
 
 LMS_ORDER = 8
 MU        = 0.01
-GAIN      = 15.0
 w         = np.zeros(LMS_ORDER, dtype=np.float32)
 history   = np.zeros(LMS_ORDER, dtype=np.float32)
 
@@ -28,10 +26,17 @@ def process(frames):
         w     += (2.0 * MU * e) * x_vec
 
     history = full[-LMS_ORDER:]
-    outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
+
+    # 입력 크기와 같은 크기로 출력 (자동 게인)
+    input_peak  = np.max(np.abs(data)) + 1e-8
+    output_peak = np.max(np.abs(out)) + 1e-8
+    auto_gain   = input_peak / output_peak
+
+    final = out * auto_gain
+    outport.get_buffer()[:] = np.clip(final, -1.0, 1.0).tobytes()
 
 with client:
     client.connect('system:capture_1', 'ANC:input_1')
     client.connect('ANC:output_1', 'system:playback_1')
-    print("LMS ANC 시작 - Ctrl+C 로 종료")
+    print("LMS ANC (자동 게인) 시작 - Ctrl+C 로 종료")
     input()
