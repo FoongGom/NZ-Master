@@ -1,48 +1,17 @@
 import jack
 import numpy as np
-import time
-import signal
-import sys
 
-client = jack.Client('ANC')
-inport  = client.inports.register('input_1')
-outport = client.outports.register('output_1')
-
-LMS_ORDER = 8
-MU        = 0.01
-GAIN      = 15.0
-w         = np.zeros(LMS_ORDER, dtype=np.float32)
-history   = np.zeros(LMS_ORDER, dtype=np.float32)
+client = jack.Client('TEST')
+inport = client.inports.register('input_1')
 
 @client.set_process_callback
 def process(frames):
-    global w, history
-    data = inport.get_array().astype(np.float32)
-    n    = len(data)
-    out  = np.zeros(n, dtype=np.float32)
-    full = np.concatenate([history, data])
-
-    for i in range(n):
-        x_vec  = full[i:i+LMS_ORDER][::-1]
-        y      = np.dot(w, x_vec)
-        out[i] = -y
-        e      = data[i] - y
-        w     += (2.0 * MU * e) * x_vec
-
-    history = full[-LMS_ORDER:]
-    outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
-
-def handle_exit(sig, frame):
-    print("\n종료 중...")
-    client.deactivate()
-    client.close()
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, handle_exit)
+    data = inport.get_array()
+    level = np.max(np.abs(data))
+    if level > 0.01:
+        print(f"레벨: {level:.3f}")
 
 with client:
-    client.connect('system:capture_1', 'ANC:input_1')
-    client.connect('ANC:output_1', 'system:playback_1')
-    print("LMS ANC 시작 - Ctrl+C 로 종료")
-    while True:
-        time.sleep(0.1)
+    client.connect('system:capture_1', 'TEST:input_1')
+    print("측정 중...")
+    input()
