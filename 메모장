@@ -9,9 +9,9 @@ def process(frames):
     data = inport.get_array()
     level = np.max(np.abs(data))
     if level > 0.01:
-        print(f"레벨: {level:.3f}")
+        print(f'레벨: {level:.3f}')
 
 with client:
     client.connect('system:capture_1', 'TEST:input_1')
-    print("측정 중...")
+    print('박수 쳐보세요...')
     input()
