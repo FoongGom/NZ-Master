@@ -1,3 +1,4 @@
+python3 -c "
 import jack
 import numpy as np
 
@@ -13,5 +14,6 @@ def process(frames):
 
 with client:
     client.connect('system:capture_1', 'TEST:input_1')
-    print('박수 쳐보세요...')
+    print('휴대폰으로 300Hz 재생해보세요...')
     input()
+"
