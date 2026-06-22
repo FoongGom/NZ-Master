@@ -1,3 +1,4 @@
+cat > ~/test.py << 'EOF'
 import jack
 import numpy as np
 import time
@@ -19,18 +20,25 @@ def process(frames):
     n    = len(data)
     out  = np.zeros(n, dtype=np.float32)
     full = np.concatenate([history, data])
-
     for i in range(n):
         x_vec  = full[i:i+LMS_ORDER][::-1]
-        y      = np.dot(w, x_vec)
+        y      = float(np.dot(w, x_vec))
         out[i] = -y
         e      = data[i] - y
         w     += (2.0 * MU * e) * x_vec
-
     history = full[-LMS_ORDER:]
     outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
 
 client.activate()
 client.connect('system:capture_1', 'ANC:input_1')
 client.connect('ANC:output_1', 'system:playback_1')
-print("LMS
+print('LMS ANC 시작 - Ctrl+C 종료')
+
+try:
+    while True:
+        time.sleep(0.1)
+except KeyboardInterrupt:
+    print('종료')
+    client.deactivate()
+    client.close()
+EOF
