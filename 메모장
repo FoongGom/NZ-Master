@@ -1,9 +1,22 @@
-import sounddevice as sd
-
-stream = sd.Stream(device=(3,3), samplerate=48000, blocksize=64, dtype='float32', channels=2, latency='low')
-stream.start()
-print(f'입력: {stream.latency[0]*1000:.2f}ms')
-print(f'출력: {stream.latency[1]*1000:.2f}ms')
-print(f'왕복: {(stream.latency[0]+stream.latency[1])*1000:.2f}ms')
-stream.stop()
-stream.close()
+Expression 'parameters->channelCount <= maxChans' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 1514
+Expression 'ValidateParameters( inputParameters, hostApi, StreamDirection_In )' failed in 'src/hostapi/alsa/pa_linux_alsa.c', line: 2818
+Traceback (most recent call last):
+  File "/home/noisezero/late.py", line 3, in <module>
+    stream = sd.Stream(device=(3,3), samplerate=48000, blocksize=64, dtype='float32', channels=2, latency='low')
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 1842, in __init__
+    _StreamBase.__init__(self, kind='duplex', wrap_callback='array',
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                         **_remove_self(locals()))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 914, in __init__
+    _check(_lib.Pa_OpenStream(self._ptr, iparameters, oparameters,
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              samplerate, blocksize, stream_flags,
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                              callback_ptr, userdata),
+                              ^^^^^^^^^^^^^^^^^^^^^^^^
+           f'Error opening {self.__class__.__name__}')
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/noisezero/.local/lib/python3.13/site-packages/sounddevice.py", line 2838, in _check
+    raise PortAudioError(errormsg, err)
+sounddevice.PortAudioError: Error opening Stream: Invalid number of channels [PaErrorCode -9998]
