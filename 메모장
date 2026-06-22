@@ -1,28 +1,20 @@
-noisezero@noisezero:~ $ jackd -P89 -d alsa -d hw:1 -r 48000 -p 256 -n 2
-jackdmp 1.9.22
-Copyright 2001-2005 Paul Davis and others.
-Copyright 2004-2016 Grame.
-Copyright 2016-2023 Filipe Coelho.
-jackdmp comes with ABSOLUTELY NO WARRANTY
-This is free software, and you are welcome to redistribute it
-under certain conditions; see the file COPYING for details
-jack_get_descriptor : dll 
-jack_get_descriptor returns null for 'jack_inprocess.so'
-jack_get_descriptor : dll 
-jack_get_descriptor returns null for 'jack_intime.so'
-jack_get_descriptor : dll 
-jack_get_descriptor returns null for 'jack_internal_metro.so'
-JACK server starting in realtime mode with priority 89
-self-connect-mode is "Don't restrict self connect requests"
-audio_reservation_init
-Acquire audio card Audio1
-creating alsa driver ... hw:1|hw:1|256|2|48000|0|0|nomon|swmeter|-|32bit
-ALSA: Cannot open PCM device alsa_pcm for capture. Falling back to playback-only mode
-configuring for 48000Hz, period = 256 frames (5.3 ms), buffer = 2 periods
-Sorry. The audio interface "hw:1" doesn't support any of the hardware sample formats that JACK's alsa-driver can use.
-ALSA: cannot configure playback channel
-Released audio card Audio1
-audio_reservation_finish
-Cannot initialize driver
-JackServer::Open failed with -1
-Failed to open server
+**** PLAYBACK 하드웨어 장치 목록 ****
+카드 0: Headphones [bcm2835 Headphones], 장치 0: bcm2835 Headphones [bcm2835 Headphones]
+  주변장치: 8/8
+  주변장치 #0: subdevice #0
+  주변장치 #1: subdevice #1
+  주변장치 #2: subdevice #2
+  주변장치 #3: subdevice #3
+  주변장치 #4: subdevice #4
+  주변장치 #5: subdevice #5
+  주변장치 #6: subdevice #6
+  주변장치 #7: subdevice #7
+카드 1: vc4hdmi0 [vc4-hdmi-0], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
+  주변장치: 1/1
+  주변장치 #0: subdevice #0
+카드 2: vc4hdmi1 [vc4-hdmi-1], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
+  주변장치: 1/1
+  주변장치 #0: subdevice #0
+카드 3: sndrpigooglevoi [snd_rpi_googlevoicehat_soundcar], 장치 0: Google voiceHAT SoundCard HiFi voicehat-hifi-0 [Google voiceHAT SoundCard HiFi voicehat-hifi-0]
+  주변장치: 1/1
+  주변장치 #0: subdevice #0
