@@ -6,7 +6,6 @@ client.activate()
 block_ms = client.blocksize / client.samplerate * 1000
 print(f'샘플레이트: {client.samplerate}Hz')
 print(f'블록사이즈: {client.blocksize}샘플')
-print(f'블록 레이턴시: {block_ms:.2f}ms')
 print(f'왕복 추정: {block_ms*4:.2f}ms')
 print(f'소음 이동거리: {block_ms*4/1000*343*100:.1f}cm')
 print(f'최적 주파수: {1000/(block_ms*4*2):.1f}Hz')
