@@ -1,13 +1,7 @@
-Cannot read socket fd = 9 err = Success
-CheckRes error
-JackSocketClientChannel read fail
-Cannot open ANC client
-JackShmReadWritePtr1::~JackShmReadWritePtr1 - Init not done for -1, skipping unlock
-JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
-JackShmReadWritePtr::~JackShmReadWritePtr - Init not done for -1, skipping unlock
-Traceback (most recent call last):
-  File "/home/noisezero/test.py", line 5, in <module>
-    client = jack.Client('ANC')
-  File "/home/noisezero/.local/lib/python3.13/site-packages/jack.py", line 216, in __init__
-    raise JackOpenError(name, self._status)
-jack.JackOpenError: Error initializing "ANC": <jack.Status 0x21: failure, server_error>
+import sounddevice as sd
+stream = sd.Stream(device=(3,3), samplerate=48000, blocksize=64, dtype='float32', channels=2, latency='low')
+stream.start()
+print(f'입력: {stream.latency[0]*1000:.2f}ms')
+print(f'출력: {stream.latency[1]*1000:.2f}ms')
+stream.stop()
+stream.close()
