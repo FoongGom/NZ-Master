@@ -1,4 +1,3 @@
-cat > ~/test.py << 'EOF'
 import jack
 import numpy as np
 import time
@@ -7,32 +6,18 @@ client = jack.Client('ANC')
 inport  = client.inports.register('input_1')
 outport = client.outports.register('output_1')
 
-LMS_ORDER = 8
-MU        = 0.01
-GAIN      = 1.0
-w         = np.zeros(LMS_ORDER, dtype=np.float32)
-history   = np.zeros(LMS_ORDER, dtype=np.float32)
+GAIN = 1.0
 
 @client.set_process_callback
 def process(frames):
-    global w, history
     data = inport.get_array().astype(np.float32)
-    n    = len(data)
-    out  = np.zeros(n, dtype=np.float32)
-    full = np.concatenate([history, data])
-    for i in range(n):
-        x_vec  = full[i:i+LMS_ORDER][::-1]
-        y      = float(np.dot(w, x_vec))
-        out[i] = -y
-        e      = data[i] - y
-        w     += (2.0 * MU * e) * x_vec
-    history = full[-LMS_ORDER:]
-    outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
+    out  = np.clip(-data * GAIN, -1.0, 1.0)
+    outport.get_buffer()[:] = out.tobytes()
 
 client.activate()
 client.connect('system:capture_1', 'ANC:input_1')
 client.connect('ANC:output_1', 'system:playback_1')
-print('LMS ANC 시작 - Ctrl+C 종료')
+print('ANC 시작 - Ctrl+C 종료')
 
 try:
     while True:
@@ -41,4 +26,3 @@ except KeyboardInterrupt:
     print('종료')
     client.deactivate()
     client.close()
-EOF
