@@ -30,12 +30,7 @@ def process(frames):
     history = full[-LMS_ORDER:]
     outport.get_buffer()[:] = np.clip(out * GAIN, -1.0, 1.0).tobytes()
 
-with client:
-    client.connect('system:capture_1', 'ANC:input_1')
-    client.connect('ANC:output_1', 'system:playback_1')
-    print("LMS ANC 시작 - Ctrl+C 종료")
-    try:
-        while True:
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print("종료")
+client.activate()
+client.connect('system:capture_1', 'ANC:input_1')
+client.connect('ANC:output_1', 'system:playback_1')
+print("LMS
