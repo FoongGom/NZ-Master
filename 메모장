@@ -1,20 +1,9 @@
-**** PLAYBACK 하드웨어 장치 목록 ****
-카드 0: Headphones [bcm2835 Headphones], 장치 0: bcm2835 Headphones [bcm2835 Headphones]
-  주변장치: 8/8
-  주변장치 #0: subdevice #0
-  주변장치 #1: subdevice #1
-  주변장치 #2: subdevice #2
-  주변장치 #3: subdevice #3
-  주변장치 #4: subdevice #4
-  주변장치 #5: subdevice #5
-  주변장치 #6: subdevice #6
-  주변장치 #7: subdevice #7
-카드 1: vc4hdmi0 [vc4-hdmi-0], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
-  주변장치: 1/1
-  주변장치 #0: subdevice #0
-카드 2: vc4hdmi1 [vc4-hdmi-1], 장치 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]
-  주변장치: 1/1
-  주변장치 #0: subdevice #0
-카드 3: sndrpigooglevoi [snd_rpi_googlevoicehat_soundcar], 장치 0: Google voiceHAT SoundCard HiFi voicehat-hifi-0 [Google voiceHAT SoundCard HiFi voicehat-hifi-0]
-  주변장치: 1/1
-  주변장치 #0: subdevice #0
+Traceback (most recent call last):
+  File "/home/noisezero/test.py", line 18, in <module>
+    client.connect('system:capture_1', 'ANC:input_1')
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/noisezero/.local/lib/python3.13/site-packages/jack.py", line 498, in connect
+    raise JackErrorCode('Connection {!r} -> {!r} '
+                        'already exists'.format(source, destination),
+                        err)
+jack.JackErrorCode: Connection 'system:capture_1' -> 'ANC:input_1' already exists (17)
