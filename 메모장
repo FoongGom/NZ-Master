@@ -1,5 +1,6 @@
 import jack
 import numpy as np
+import time
 
 client = jack.Client('ANC')
 inport  = client.inports.register('input_1')
@@ -10,9 +11,12 @@ MU        = 0.01
 w         = np.zeros(LMS_ORDER, dtype=np.float32)
 history   = np.zeros(LMS_ORDER, dtype=np.float32)
 
+process_times = []
+
 @client.set_process_callback
 def process(frames):
     global w, history
+    t1   = time.perf_counter()
     data = inport.get_array().astype(np.float32)
     n    = len(data)
     out  = np.zeros(n, dtype=np.float32)
@@ -27,16 +31,26 @@ def process(frames):
 
     history = full[-LMS_ORDER:]
 
-    # 입력 크기와 같은 크기로 출력 (자동 게인)
     input_peak  = np.max(np.abs(data)) + 1e-8
-    output_peak = np.max(np.abs(out)) + 1e-8
+    output_peak = np.max(np.abs(out))  + 1e-8
     auto_gain   = input_peak / output_peak
+    outport.get_buffer()[:] = np.clip(out * auto_gain, -1.0, 1.0).tobytes()
 
-    final = out * auto_gain
-    outport.get_buffer()[:] = np.clip(final, -1.0, 1.0).tobytes()
+    t2 = time.perf_counter()
+    process_times.append((t2 - t1) * 1000)
 
 with client:
     client.connect('system:capture_1', 'ANC:input_1')
     client.connect('ANC:output_1', 'system:playback_1')
-    print("LMS ANC (자동 게인) 시작 - Ctrl+C 로 종료")
+
+    block_ms = client.blocksize / client.samplerate * 1000
+    print(f"블록: {block_ms:.2f}ms")
+    print("5초 측정 중...")
+    time.sleep(5)
+
+    avg = np.mean(process_times) if process_times else 0
+    print(f"평균 연산시간: {avg:.3f}ms")
+    print(f"왕복 레이턴시: {block_ms*4 + avg:.2f}ms")
+    print(f"최적 주파수: {1000/((block_ms*4+avg)*2):.1f}Hz")
+    print("ANC 실행 중 - Ctrl+C 종료")
     input()
