@@ -1,14 +1,44 @@
 import jack
+import numpy as np
+import time
+from collections import deque
 
-client = jack.Client('LATENCY_TEST')
+client = jack.Client('ANC')
+inport  = client.inports.register('input_1')
+outport = client.outports.register('output_1')
+
+GAIN         = 8.0
+EXTRA_DELAY  = int(0.00326 * 48000)  # 3.26ms = 157샘플
+delay_buffer = deque(np.zeros(EXTRA_DELAY, dtype=np.float32), maxlen=EXTRA_DELAY)
+
+@client.set_process_callback
+def process(frames):
+    data = inport.get_array().astype(np.float32)
+    out  = np.zeros(len(data), dtype=np.float32)
+
+    for i in range(len(data)):
+        delay_buffer.append(-data[i] * GAIN)
+        out[i] = delay_buffer[0]
+
+    outport.get_buffer()[:] = np.clip(out, -1.0, 1.0).tobytes()
+
 client.activate()
 
-block_ms = client.blocksize / client.samplerate * 1000
-print(f'샘플레이트: {client.samplerate}Hz')
-print(f'블록사이즈: {client.blocksize}샘플')
-print(f'왕복 추정: {block_ms*4:.2f}ms')
-print(f'소음 이동거리: {block_ms*4/1000*343*100:.1f}cm')
-print(f'최적 주파수: {1000/(block_ms*4*2):.1f}Hz')
+try:
+    client.connect('system:capture_1', 'ANC:input_1')
+except:
+    pass
+try:
+    client.connect('ANC:output_1', 'system:playback_1')
+except:
+    pass
 
-client.deactivate()
-client.close()
+print('딜레이 보정 ANC 시작 - Ctrl+C 종료')
+
+try:
+    while True:
+        time.sleep(0.1)
+except KeyboardInterrupt:
+    print('종료')
+    client.deactivate()
+    client.close()
