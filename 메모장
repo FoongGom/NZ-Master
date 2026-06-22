@@ -1,7 +1,9 @@
 import sounddevice as sd
+
 stream = sd.Stream(device=(3,3), samplerate=48000, blocksize=64, dtype='float32', channels=2, latency='low')
 stream.start()
 print(f'입력: {stream.latency[0]*1000:.2f}ms')
 print(f'출력: {stream.latency[1]*1000:.2f}ms')
+print(f'왕복: {(stream.latency[0]+stream.latency[1])*1000:.2f}ms')
 stream.stop()
 stream.close()
