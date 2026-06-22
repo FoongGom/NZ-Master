@@ -1,5 +1,4 @@
-Cannot connect to server socket err = No such file or directory
-Cannot connect to server request channel
+noisezero@noisezero:~ $ jackd -P89 -d alsa -d hw:1 -r 48000 -p 256 -n 2
 jackdmp 1.9.22
 Copyright 2001-2005 Paul Davis and others.
 Copyright 2004-2016 Grame.
@@ -13,32 +12,17 @@ jack_get_descriptor : dll
 jack_get_descriptor returns null for 'jack_intime.so'
 jack_get_descriptor : dll 
 jack_get_descriptor returns null for 'jack_internal_metro.so'
-JACK server starting in realtime mode with priority 10
+JACK server starting in realtime mode with priority 89
 self-connect-mode is "Don't restrict self connect requests"
 audio_reservation_init
-Acquire audio card Audio0
-creating alsa driver ... hw:0|hw:0|1024|2|48000|0|0|nomon|swmeter|-|32bit
+Acquire audio card Audio1
+creating alsa driver ... hw:1|hw:1|256|2|48000|0|0|nomon|swmeter|-|32bit
 ALSA: Cannot open PCM device alsa_pcm for capture. Falling back to playback-only mode
-configuring for 48000Hz, period = 1024 frames (21.3 ms), buffer = 2 periods
-ALSA: final selected sample format for playback: 16bit little-endian
-ALSA: use 2 periods for playback
-Unknown source port in attempted (dis)connection src_name [system:capture_1] dst_name [ANC:input_1]
-Traceback (most recent call last):
-  File "/home/noisezero/test.py", line 18, in <module>
-    client.connect('system:capture_1', 'ANC:input_1')
-    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/noisezero/.local/lib/python3.13/site-packages/jack.py", line 501, in connect
-    _check(err,
-    ~~~~~~^^^^^
-           f'Error connecting {source!r} -> {destination!r}')
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/noisezero/.local/lib/python3.13/site-packages/jack.py", line 3029, in _check
-    raise JackErrorCode(msg, error_code)
-jack.JackErrorCode: Error connecting 'system:capture_1' -> 'ANC:input_1' (-1)
-JackEngine::XRun: client = ANC was not finished, state = Running
-JackAudioDriver::ProcessGraphAsyncMaster: Process error
-JackTemporaryException : now quits...
-Jack main caught signal 2
-noisezero@noisezero:~ $ Released audio card Audio0
+configuring for 48000Hz, period = 256 frames (5.3 ms), buffer = 2 periods
+Sorry. The audio interface "hw:1" doesn't support any of the hardware sample formats that JACK's alsa-driver can use.
+ALSA: cannot configure playback channel
+Released audio card Audio1
 audio_reservation_finish
-^C
+Cannot initialize driver
+JackServer::Open failed with -1
+Failed to open server
