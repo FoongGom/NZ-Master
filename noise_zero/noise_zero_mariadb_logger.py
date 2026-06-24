@@ -5,16 +5,14 @@ import librosa
 import numpy as np
 from datetime import datetime
 
-# MariaDB connection info (for Pi)
 DB_CONFIG = {
     'host': '172.16.113.66',
     'user': 'LSM',
-    'password': 'password',     
+    'password': 'password',      
     'database': 'noise_monitoring'
 }
 
 def init_mariadb_table():
-    """Initialize MariaDB table"""
     conn = pymysql.connect(**DB_CONFIG)
     cursor = conn.cursor()
     cursor.execute("""
@@ -29,79 +27,73 @@ def init_mariadb_table():
     """)
     conn.commit()
     conn.close()
-    print("MariaDB table initialized successfully")
+    print("MariaDB table OK")
 
 def extract_audio_features(audio_path):
-    """Extract MFCC + delta + delta2 features"""
     try:
         y, sr = librosa.load(audio_path, sr=22050)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         delta = librosa.feature.delta(mfcc)
         delta2 = librosa.feature.delta(mfcc, order=2)
-        features = np.concatenate([
-            mfcc.mean(axis=1),
-            delta.mean(axis=1),
-            delta2.mean(axis=1)
-        ])
+        features = np.concatenate([mfcc.mean(axis=1), delta.mean(axis=1), delta2.mean(axis=1)])
+        print(f"  Features shape: {features.shape} for {os.path.basename(audio_path)}")
         return features
     except Exception as e:
-        print(f"Feature extraction failed: {e}")
+        print(f"  Feature extraction failed: {e}")
         return None
 
 def build_sound_database(reference_folder):
-    """Build reference database from sound samples"""
-    database = {}
+    database = []   # list 형태 유지
     count = 0
-    print(f"Scanning folder: {reference_folder}")
+    print(f"Building database from: {reference_folder}")
     for root, dirs, files in os.walk(reference_folder):
         label = os.path.basename(root)
-        if label == "sound_sample" or not label or label.startswith('.'):
+        if not label or label.startswith('.') or label == "sound_sample":
             continue
-        print(f"Processing folder: {label} ({len(files)} files)")
-        features_list = []
+        print(f"Folder: {label}")
         for file in files:
             if file.endswith('.wav'):
                 path = os.path.join(root, file)
-                print(f"  Processing file: {file}")
                 features = extract_audio_features(path)
                 if features is not None:
-                    features_list.append(features)
+                    database.append((label, features))
                     count += 1
-        if features_list:
-            # Average if multiple samples per label
-            database[label] = np.mean(features_list, axis=0)
-            print(f" Added label: {label} (avg from {len(features_list)} files)")
-    with open("sound_database.pkl", "wb") as f:
-        pickle.dump(database, f)
-    print(f"Database built successfully: {len(database)} types, {count} files")
+                    print(f"  Added: {label} - {file}")
+    try:
+        with open("sound_database.pkl", "wb") as f:
+            pickle.dump(database, f)
+        size = os.path.getsize("sound_database.pkl")
+        print(f"LIST Database saved: {len(database)} samples, size={size} bytes")
+    except Exception as e:
+        print(f"Save failed: {e}")
     return database
 
 def find_most_similar_sound(query_features, database):
-    """Find most similar sound using cosine similarity (fixed for dict database)"""
+    print(f"Matching against {len(database)} samples...")
     if not database or query_features is None:
+        print("  Database empty or no features")
         return "Unknown", 0.0
    
     best_label = "Unknown"
     best_sim = -1.0
-   
-    for label, features in database.items():
-        if features is None:
-            continue
-        try:
-            # Cosine similarity
-            similarity = np.dot(query_features, features) / (
-                np.linalg.norm(query_features) * np.linalg.norm(features) + 1e-8
-            )
-            if similarity > best_sim:
-                best_sim = similarity
-                best_label = label
-        except Exception:
-            continue
-   
+    for item in database:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            label = item[0]
+            features = item[1]
+            try:
+                sim = np.dot(query_features, features) / (
+                    np.linalg.norm(query_features) * np.linalg.norm(features) + 1e-8
+                )
+                if sim > best_sim:
+                    best_sim = sim
+                    best_label = label
+            except Exception as e:
+                print(f"  Similarity calc error for {label}: {e}")
+    print(f"Best match: {best_label} (sim={best_sim:.3f})")
     return best_label, best_sim
 
 def log_noise_detection(location, query_file, min_similarity=0.0):
-    """Main classification + logging function"""
+    print(f"Analyzing file: {query_file}")
     features = extract_audio_features(query_file)
     if features is None:
         label = "Unknown"
@@ -112,7 +104,7 @@ def log_noise_detection(location, query_file, min_similarity=0.0):
                 database = pickle.load(f)
             label, similarity = find_most_similar_sound(features, database)
         except Exception as e:
-            print(f"Database load or matching error: {e}")
+            print(f"CRITICAL DB load error: {e}")
             label = "Unknown"
             similarity = 0.0
    
@@ -128,27 +120,8 @@ def log_noise_detection(location, query_file, min_similarity=0.0):
         """, (datetime.now(), location, label, float(similarity), query_file))
         conn.commit()
         conn.close()
-        print(f"DB log saved: {label} (sim: {similarity:.3f})")
+        print(f"LOGGED -> {label} (sim: {similarity:.3f})")
     except Exception as e:
-        print(f"DB save failed: {e}")
+        print(f"DB insert failed: {e}")
    
     return {"label": label, "similarity": similarity}
-
-def analyze_noise_patterns():
-    """Analyze saved noise patterns"""
-    try:
-        conn = pymysql.connect(**DB_CONFIG)
-        cursor = conn.cursor()
-        cursor.execute("SELECT noise_type, COUNT(*) as count FROM noise_logs GROUP BY noise_type ORDER BY count DESC")
-        results = cursor.fetchall()
-        conn.close()
-       
-        print("\n=== Noise Occurrence Patterns ===")
-        for row in results:
-            print(f"{row[0]}: {row[1]} times")
-    except Exception as e:
-        print(f"Pattern analysis failed: {e}")
-
-# For testing
-if __name__ == "__main__":
-    init_mariadb_table()
