@@ -8,7 +8,7 @@ from datetime import datetime
 DB_CONFIG = {
     'host': '172.16.113.66',
     'user': 'LSM',
-    'password': 'password',      
+    'password': 'password',
     'database': 'noise_monitoring'
 }
 
@@ -32,18 +32,22 @@ def init_mariadb_table():
 def extract_audio_features(audio_path):
     try:
         y, sr = librosa.load(audio_path, sr=22050)
+        # Normalize audio
+        y = librosa.util.normalize(y)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         delta = librosa.feature.delta(mfcc)
         delta2 = librosa.feature.delta(mfcc, order=2)
         features = np.concatenate([mfcc.mean(axis=1), delta.mean(axis=1), delta2.mean(axis=1)])
-        print(f"  Features shape: {features.shape} for {os.path.basename(audio_path)}")
+        # L2 normalize features
+        features = features / (np.linalg.norm(features) + 1e-8)
+        print(f"  Features shape: {features.shape}")
         return features
     except Exception as e:
         print(f"  Feature extraction failed: {e}")
         return None
 
 def build_sound_database(reference_folder):
-    database = []   # list 형태 유지
+    database = []
     count = 0
     print(f"Building database from: {reference_folder}")
     for root, dirs, files in os.walk(reference_folder):
@@ -71,7 +75,7 @@ def build_sound_database(reference_folder):
 def find_most_similar_sound(query_features, database):
     print(f"Matching against {len(database)} samples...")
     if not database or query_features is None:
-        print("  Database empty or no features")
+        print("  Database empty")
         return "Unknown", 0.0
    
     best_label = "Unknown"
@@ -81,14 +85,12 @@ def find_most_similar_sound(query_features, database):
             label = item[0]
             features = item[1]
             try:
-                sim = np.dot(query_features, features) / (
-                    np.linalg.norm(query_features) * np.linalg.norm(features) + 1e-8
-                )
+                sim = np.dot(query_features, features)
                 if sim > best_sim:
                     best_sim = sim
                     best_label = label
-            except Exception as e:
-                print(f"  Similarity calc error for {label}: {e}")
+            except:
+                continue
     print(f"Best match: {best_label} (sim={best_sim:.3f})")
     return best_label, best_sim
 
