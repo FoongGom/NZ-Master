@@ -8,9 +8,9 @@ from datetime import datetime
 # MariaDB 연결 정보 (Pi 환경에 맞게 수정)
 DB_CONFIG = {
     'host': '172.16.113.66',
-    'user': 'LSM',           # 너가 사용하는 사용자
-    'password': 'your_password',   # ← 실제 비밀번호로 변경
-    'database': 'noisezero'
+    'user': 'LSM',           
+    'password': 'password',  
+    'database': 'noise_monitoring'
 }
 
 def init_mariadb_table():
