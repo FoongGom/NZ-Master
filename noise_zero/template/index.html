@@ -10,13 +10,16 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <style>
         body {
-            background: linear-gradient(rgba(0,0,0,0.75), rgba(0,0,0,0.85)), 
-                        url('https://picsum.photos/id/1015/1920/1080') center/cover no-repeat fixed !important;
-            background-attachment: fixed !important;
+            background-color: #111111;
+            background-image:
+                linear-gradient(rgba(0,0,0,0.75), rgba(0,0,0,0.85)),
+                url("{{ url_for('static', filename='noiseZero_logo.jpg') }}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
         }
-        
         .hero-bg {
-            background: transparent !important;
+            background: transparent;
         }
     </style>
 </head>
@@ -263,8 +266,8 @@
             data: {
                 labels: ['성인 발소리', '문 소리', '가구 끌기', '세탁기', '진공청소기'],
                 datasets: [
-                    { label: '상쇄 전 (dB)', data: [78, 72, 69, 65, 71], backgroundColor: '#f87171' },
-                    { label: '상쇄 후 (dB)', data: [51, 47, 45, 43, 48], backgroundColor: '#4ade80' }
+                    { label: '상쇄 전 (dB)', data: [87, 65, 69, 81, 92], backgroundColor: '#f87171' },
+                    { label: '상쇄 후 (dB)', data: [79, 59, 54, 57, 71], backgroundColor: '#4ade80' }
                 ]
             },
             options: {
