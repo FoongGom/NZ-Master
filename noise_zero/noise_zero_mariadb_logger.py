@@ -38,7 +38,7 @@ def extract_audio_features(audio_path):
         delta2 = librosa.feature.delta(mfcc, order=2)
         features = np.concatenate([mfcc.mean(axis=1), delta.mean(axis=1), delta2.mean(axis=1)])
         features = features / (np.linalg.norm(features) + 1e-8)
-        print(f"  Features shape: {features.shape}")
+        print(f"  Features shape: {features.shape} for {os.path.basename(audio_path)}")
         return features
     except Exception as e:
         print(f"  Feature extraction failed: {e}")
@@ -48,11 +48,13 @@ def build_sound_database(reference_folder):
     database = []
     count = 0
     print(f"Building database from: {reference_folder}")
+    print("Folder structure:")
     for root, dirs, files in os.walk(reference_folder):
+        rel_path = os.path.relpath(root, reference_folder)
         label = os.path.basename(root)
-        if not label or label.startswith('.') or label == "sound_sample":
+        print(f"  Scanning: {rel_path} (label={label}, files={len(files)})")
+        if label.startswith('.') or not label or label == "sound_sample":
             continue
-        print(f"Folder: {label}")
         for file in files:
             if file.endswith('.wav'):
                 path = os.path.join(root, file)
@@ -60,7 +62,7 @@ def build_sound_database(reference_folder):
                 if features is not None:
                     database.append((label, features))
                     count += 1
-                    print(f"  Added: {label} - {file}")
+                    print(f"    Added: {label}/{file}")
     try:
         with open("sound_database.pkl", "wb") as f:
             pickle.dump(database, f)
@@ -87,7 +89,7 @@ def find_most_similar_sound(query_features, database):
                 if sim > best_sim:
                     best_sim = sim
                     best_label = label
-            except Exception:
+            except:
                 continue
     print(f"Best match: {best_label} (sim={best_sim:.3f})")
     return best_label, best_sim
@@ -127,7 +129,6 @@ def log_noise_detection(location, query_file, min_similarity=0.0):
     return {"label": label, "similarity": similarity}
 
 def analyze_noise_patterns():
-    """Analyze saved noise patterns"""
     try:
         conn = pymysql.connect(**DB_CONFIG)
         cursor = conn.cursor()
