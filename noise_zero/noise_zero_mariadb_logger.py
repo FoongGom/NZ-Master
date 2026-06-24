@@ -32,13 +32,11 @@ def init_mariadb_table():
 def extract_audio_features(audio_path):
     try:
         y, sr = librosa.load(audio_path, sr=22050)
-        # Normalize audio
         y = librosa.util.normalize(y)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
         delta = librosa.feature.delta(mfcc)
         delta2 = librosa.feature.delta(mfcc, order=2)
         features = np.concatenate([mfcc.mean(axis=1), delta.mean(axis=1), delta2.mean(axis=1)])
-        # L2 normalize features
         features = features / (np.linalg.norm(features) + 1e-8)
         print(f"  Features shape: {features.shape}")
         return features
@@ -89,7 +87,7 @@ def find_most_similar_sound(query_features, database):
                 if sim > best_sim:
                     best_sim = sim
                     best_label = label
-            except:
+            except Exception:
                 continue
     print(f"Best match: {best_label} (sim={best_sim:.3f})")
     return best_label, best_sim
@@ -127,3 +125,17 @@ def log_noise_detection(location, query_file, min_similarity=0.0):
         print(f"DB insert failed: {e}")
    
     return {"label": label, "similarity": similarity}
+
+def analyze_noise_patterns():
+    """Analyze saved noise patterns"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT noise_type, COUNT(*) as count FROM noise_logs GROUP BY noise_type ORDER BY count DESC")
+        results = cursor.fetchall()
+        conn.close()
+        print("\n=== Noise Occurrence Patterns ===")
+        for row in results:
+            print(f"{row[0]}: {row[1]} times")
+    except Exception as e:
+        print(f"Pattern analysis failed: {e}")
